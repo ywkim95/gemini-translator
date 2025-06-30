@@ -1,0 +1,152 @@
+/* Global Styles */
+html, body {
+  height: 100%; /* Ensure html and body take full height */
+  margin: 0; /* Remove default body margin */
+  padding: 0; /* Ensure no padding on html, body */
+}
+
+body {
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
+  background-color: #f0f2f5;
+  color: #1c1e21;
+  overflow: auto; /* Add this for scrollable content */
+}
+
+/* Iframe Root - handled by content_script.js */
+#sidekick-translator-root {
+  position: fixed;
+  top: 0;
+  right: 0;
+  /* width는 content_script.js에서 초기 설정하고, min/max-width는 여기서 제어 */
+  min-width: 300px;
+  max-width: 1000px;
+  height: 100%;
+  z-index: 2147483647;
+  border: none;
+  box-shadow: -2px 0 8px rgba(0, 0, 0, 0.15);
+  /* display: flex; 제거 */
+}
+
+#st-iframe {
+  /* position, right, top, width, height는 content_script.js에서 설정 */
+  width: 100%; /* 부모의 너비를 꽉 채우도록 */
+  height: 100%;
+  border: none; /* iframe 자체의 테두리 제거 */
+}
+
+/* Resizer Handle - 제거 */
+/* #st-resizer { ... } */
+
+/* Container */
+.container {
+  padding: 0 20px; /* 상단 패딩 제거, 좌우 패딩 유지 */
+  height: 100%; /* Ensure container takes full height */
+  box-sizing: border-box;
+  overflow-y: auto;
+}
+
+/* Header */
+.header {
+  font-size: 20px;
+  font-weight: 600;
+  color: #0050d7; /* Blue */
+  padding-top: 20px; /* 상단 패딩 추가 */
+  padding-bottom: 15px;
+  border-bottom: 1px solid #ddd;
+  margin-bottom: 15px;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  position: sticky; /* 헤더 고정 */
+  top: 0; /* 상단에 고정 */
+  background-color: #f0f2f5; /* 스크롤 시 내용이 비치지 않도록 배경색 지정 */
+  z-index: 1; /* 다른 내용 위에 표시 */
+}
+
+.width-controls button {
+  background-color: #0050d7;
+  color: white;
+  border: none;
+  padding: 5px 10px;
+  margin-left: 5px;
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 12px;
+}
+
+.width-controls button:hover {
+  background-color: #003d9e;
+}
+
+.close-btn {
+  background: none;
+  border: none;
+  font-size: 24px;
+  color: #555;
+  cursor: pointer;
+  padding: 0;
+  line-height: 1;
+}
+
+.close-btn:hover {
+  color: #333;
+}
+
+/* Section */
+.section {
+  margin-bottom: 20px;
+}
+
+.section h3 {
+  font-size: 16px;
+  font-weight: 500;
+  margin-top: 0;
+  margin-bottom: 10px;
+  color: #333;
+}
+
+#st-summary,
+#st-translation {
+  font-size: 14px;
+  line-height: 1.6;
+  white-space: pre-wrap; /* Preserve line breaks */
+  word-wrap: break-word;
+  background-color: #fff;
+  padding: 15px;
+  border-radius: 6px;
+  border: 1px solid #ddd;
+  text-align: left; /* 왼쪽 정렬 추가 */
+}
+
+/* State Views */
+.state-view {
+  text-align: center;
+  padding-top: 50px;
+}
+
+/* Loading Spinner */
+.spinner {
+  border: 4px solid rgba(0, 0, 0, 0.1);
+  width: 36px;
+  height: 36px;
+  border-radius: 50%;
+  border-left-color: #0050d7; /* Blue */
+  margin: 0 auto 20px auto;
+
+  animation: spin 1s ease-in-out infinite;
+}
+
+@keyframes spin {
+  0% {
+    transform: rotate(0deg);
+  }
+  100% {
+    transform: rotate(360deg);
+  }
+}
+
+/* Error State */
+#st-error-message {
+  color: #d93025; /* Red */
+  font-weight: 500;
+}
