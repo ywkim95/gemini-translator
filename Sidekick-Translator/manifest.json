@@ -3,14 +3,8 @@
   "name": "Sidekick Translator",
   "version": "1.0",
   "description": "현재 페이지를 Gemini로 요약 및 번역합니다.",
-  "permissions": [
-    "activeTab",
-    "scripting",
-    "storage" 
-  ],
-  "host_permissions": [
-    "<all_urls>"
-  ],
+  "permissions": ["activeTab", "scripting", "storage"],
+  "host_permissions": ["<all_urls>"],
   "action": {
     "default_title": "페이지 요약/번역 실행"
   },
@@ -18,14 +12,18 @@
     "service_worker": "background.js"
   },
   "icons": {
-    "16": "icons/icon16.png",
-    "48": "icons/icon48.png",
-    "128": "icons/icon128.png"
+    "16": "icons/icon_16.svg",
+    "48": "icons/icon_48.svg",
+    "128": "icons/icon_128.svg"
   },
   "web_accessible_resources": [
     {
-      "resources": [ "/scripts/readability.js", "/scripts/showdown.js", "/ui/sidebar.css" ],
-      "matches": [ "<all_urls>" ]
+      "resources": [
+        "/scripts/readability.js",
+        "/scripts/showdown.js",
+        "/ui/sidebar.css"
+      ],
+      "matches": ["<all_urls>"]
     }
   ],
   "options_page": "options.html"
