@@ -117,55 +117,60 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         let accumulatedTextContent = ''; // This will accumulate the actual text from parts[0].text
         let buffer = ''; // Accumulate raw text from stream
         let done = false;
+        let chunkCount = 0;
+
+        console.log('[background.js] Starting stream processing...');
 
         while (!done) {
           const { value, done: readerDone } = await reader.read();
           done = readerDone;
           const chunk = decoder.decode(value, { stream: true });
           buffer += chunk;
+          chunkCount++;
 
-          // Process complete JSON objects separated by comma and newline
-          let separatorIndex;
-          while ((separatorIndex = buffer.indexOf('},\n{')) !== -1) {
-            const jsonStr = buffer.substring(0, separatorIndex + 1).trim();
-            buffer = '{' + buffer.substring(separatorIndex + 3);
-
-            if (jsonStr === '') continue;
-
-            try {
-              const parsedChunk = JSON.parse(jsonStr);
-              if (parsedChunk.candidates && parsedChunk.candidates[0] && parsedChunk.candidates[0].content && parsedChunk.candidates[0].content.parts && parsedChunk.candidates[0].content.parts[0]) {
-                const newText = parsedChunk.candidates[0].content.parts[0].text;
-                accumulatedTextContent += newText;
-                chrome.tabs.sendMessage(tabId, { type: 'DISPLAY_STREAM_CHUNK', payload: { text: newText } });
-              }
-            } catch (e) {
-              console.warn('Could not parse stream JSON object:', jsonStr.substring(0, 100) + '...', e);
-              // If parsing fails, it might be a partial JSON object, so we break and wait for more data
-              break;
-            }
-          }
+          console.log(`[background.js] Chunk ${chunkCount}: ${chunk}`);
+          console.log(`[background.js] Current buffer length: ${buffer.length}`);
         }
 
-        // After the stream is done, process any remaining data in the buffer
-        if (buffer.trim() !== '') {
-          // Remove trailing comma if present
-          let finalBuffer = buffer.trim();
-          if (finalBuffer.endsWith(',')) {
-            finalBuffer = finalBuffer.slice(0, -1);
-          }
+        console.log('[background.js] Stream complete. Full buffer:', buffer);
+
+        // Try to parse the entire buffer as a single response
+        try {
+          const fullResponse = JSON.parse(buffer);
+          console.log('[background.js] Successfully parsed full response:', fullResponse);
           
-          try {
-            const parsedChunk = JSON.parse(finalBuffer);
-            if (parsedChunk.candidates && parsedChunk.candidates[0] && parsedChunk.candidates[0].content && parsedChunk.candidates[0].content.parts && parsedChunk.candidates[0].content.parts[0]) {
-              const newText = parsedChunk.candidates[0].content.parts[0].text;
-              accumulatedTextContent += newText;
-              chrome.tabs.sendMessage(tabId, { type: 'DISPLAY_STREAM_CHUNK', payload: { text: newText } });
+          if (fullResponse.candidates && fullResponse.candidates[0] && fullResponse.candidates[0].content && fullResponse.candidates[0].content.parts && fullResponse.candidates[0].content.parts[0]) {
+            accumulatedTextContent = fullResponse.candidates[0].content.parts[0].text;
+            console.log('[background.js] Extracted text content:', accumulatedTextContent);
+          }
+        } catch (parseError) {
+          console.log('[background.js] Failed to parse as single JSON, trying to split by data: prefix...');
+          
+          // Split by "data: " prefix which is common in SSE streams
+          const lines = buffer.split('\n');
+          for (const line of lines) {
+            const trimmedLine = line.trim();
+            if (trimmedLine.startsWith('data: ')) {
+              const jsonStr = trimmedLine.substring(6); // Remove "data: " prefix
+              if (jsonStr === '[DONE]') continue;
+              
+              try {
+                const parsedChunk = JSON.parse(jsonStr);
+                console.log('[background.js] Parsed chunk:', parsedChunk);
+                
+                if (parsedChunk.candidates && parsedChunk.candidates[0] && parsedChunk.candidates[0].content && parsedChunk.candidates[0].content.parts && parsedChunk.candidates[0].content.parts[0]) {
+                  const newText = parsedChunk.candidates[0].content.parts[0].text;
+                  accumulatedTextContent += newText;
+                  chrome.tabs.sendMessage(tabId, { type: 'DISPLAY_STREAM_CHUNK', payload: { text: newText } });
+                }
+              } catch (e) {
+                console.warn('[background.js] Could not parse data line:', jsonStr, e);
+              }
             }
-          } catch (e) {
-            console.warn('Could not parse final stream buffer as JSON:', finalBuffer.substring(0, 100) + '...', e);
           }
         }
+
+        console.log('[background.js] Final accumulated text content:', accumulatedTextContent);
 
         const rawText = accumulatedTextContent; // Now rawText is the actual model-generated text, which should be the final JSON
         let jsonString = rawText;
