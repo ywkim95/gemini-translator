@@ -132,45 +132,30 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
           console.log(`[background.js] Current buffer length: ${buffer.length}`);
         }
 
-        console.log('[background.js] Stream complete. Full buffer:', buffer);
+        console.log('[background.js] Stream complete. Processing JSON array...');
 
-        // Try to parse the entire buffer as a single response
+        // The response is a JSON array of objects: [{}, {}, ...]
         try {
-          const fullResponse = JSON.parse(buffer);
-          console.log('[background.js] Successfully parsed full response:', fullResponse);
+          const responseArray = JSON.parse(buffer);
+          console.log('[background.js] Successfully parsed response array, length:', responseArray.length);
           
-          if (fullResponse.candidates && fullResponse.candidates[0] && fullResponse.candidates[0].content && fullResponse.candidates[0].content.parts && fullResponse.candidates[0].content.parts[0]) {
-            accumulatedTextContent = fullResponse.candidates[0].content.parts[0].text;
-            console.log('[background.js] Extracted text content:', accumulatedTextContent);
-          }
-        } catch (parseError) {
-          console.log('[background.js] Failed to parse as single JSON, trying to split by data: prefix...');
-          
-          // Split by "data: " prefix which is common in SSE streams
-          const lines = buffer.split('\n');
-          for (const line of lines) {
-            const trimmedLine = line.trim();
-            if (trimmedLine.startsWith('data: ')) {
-              const jsonStr = trimmedLine.substring(6); // Remove "data: " prefix
-              if (jsonStr === '[DONE]') continue;
+          // Extract text from each response object and accumulate
+          for (const responseObj of responseArray) {
+            if (responseObj.candidates && responseObj.candidates[0] && responseObj.candidates[0].content && responseObj.candidates[0].content.parts && responseObj.candidates[0].content.parts[0]) {
+              const newText = responseObj.candidates[0].content.parts[0].text;
+              accumulatedTextContent += newText;
+              console.log('[background.js] Added text chunk:', newText.substring(0, 50) + '...');
               
-              try {
-                const parsedChunk = JSON.parse(jsonStr);
-                console.log('[background.js] Parsed chunk:', parsedChunk);
-                
-                if (parsedChunk.candidates && parsedChunk.candidates[0] && parsedChunk.candidates[0].content && parsedChunk.candidates[0].content.parts && parsedChunk.candidates[0].content.parts[0]) {
-                  const newText = parsedChunk.candidates[0].content.parts[0].text;
-                  accumulatedTextContent += newText;
-                  chrome.tabs.sendMessage(tabId, { type: 'DISPLAY_STREAM_CHUNK', payload: { text: newText } });
-                }
-              } catch (e) {
-                console.warn('[background.js] Could not parse data line:', jsonStr, e);
-              }
+              // Send streaming chunk to UI
+              chrome.tabs.sendMessage(tabId, { type: 'DISPLAY_STREAM_CHUNK', payload: { text: newText } });
             }
           }
+        } catch (parseError) {
+          console.error('[background.js] Failed to parse response array:', parseError);
+          throw new Error(`JSON 파싱 오류: ${parseError.message}`);
         }
 
-        console.log('[background.js] Final accumulated text content:', accumulatedTextContent);
+        console.log('[background.js] Final accumulated text content length:', accumulatedTextContent.length);
 
         const rawText = accumulatedTextContent; // Now rawText is the actual model-generated text, which should be the final JSON
         let jsonString = rawText;
