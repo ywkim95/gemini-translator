@@ -35,6 +35,8 @@ document.addEventListener('DOMContentLoaded', () => {
   // background.js로부터 결과/에러 수신
   chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     if (message.type === 'DISPLAY_STREAM_CHUNK') {
+      loadingView.style.display = 'none';
+      resultView.style.display = 'block';
       summaryEl.innerHTML += message.payload.text;
       translationEl.innerHTML += message.payload.text;
     } else if (message.type === 'DISPLAY_RESULTS') {
