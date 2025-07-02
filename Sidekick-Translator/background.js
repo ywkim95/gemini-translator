@@ -130,7 +130,10 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
             try {
               const parsedChunk = JSON.parse(line);
               if (parsedChunk.candidates && parsedChunk.candidates[0] && parsedChunk.candidates[0].content && parsedChunk.candidates[0].content.parts && parsedChunk.candidates[0].content.parts[0]) {
-                accumulatedTextContent += parsedChunk.candidates[0].content.parts[0].text;
+                const newText = parsedChunk.candidates[0].content.parts[0].text;
+                accumulatedTextContent += newText;
+                // Send partial results to sidebar.js
+                chrome.tabs.sendMessage(tabId, { type: 'DISPLAY_STREAM_CHUNK', payload: { text: newText } });
               }
             } catch (e) {
               console.warn('Could not parse stream chunk as JSON (might be partial or non-JSON data):', line, e);

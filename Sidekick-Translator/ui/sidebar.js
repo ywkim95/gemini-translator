@@ -13,6 +13,8 @@ document.addEventListener('DOMContentLoaded', () => {
     resultView.style.display = 'none';
     errorView.style.display = 'none';
     loadingView.style.display = 'block';
+    summaryEl.innerHTML = ''; // Clear previous content
+    translationEl.innerHTML = ''; // Clear previous content
     // content_script에 분석 요청
     chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
       chrome.tabs.sendMessage(tabs[0].id, { type: "ANALYZE_PAGE" });
@@ -32,7 +34,10 @@ document.addEventListener('DOMContentLoaded', () => {
 
   // background.js로부터 결과/에러 수신
   chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
-    if (message.type === 'DISPLAY_RESULTS') {
+    if (message.type === 'DISPLAY_STREAM_CHUNK') {
+      summaryEl.innerHTML += message.payload.text;
+      translationEl.innerHTML += message.payload.text;
+    } else if (message.type === 'DISPLAY_RESULTS') {
       loadingView.style.display = 'none';
       resultView.style.display = 'block';
       summaryEl.innerHTML = converter.makeHtml(message.payload.summary);
