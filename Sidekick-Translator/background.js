@@ -153,6 +153,12 @@ ${text}`;
 
   if (!response.ok) {
     const errorData = await response.json();
+    
+    // 429 에러 (할당량 초과)에 대한 특별 처리
+    if (response.status === 429) {
+      throw new Error(`🚫 API 사용량 제한에 도달했습니다\n\nGemini API의 무료 할당량을 모두 사용했습니다.\n• 일일 할당량이 재설정될 때까지 기다려주세요\n• 또는 Google AI Studio에서 유료 플랜을 확인해보세요\n\n자세한 정보: https://ai.google.dev/gemini-api/docs/rate-limits`);
+    }
+    
     throw new Error(`API Error: ${response.status} ${response.statusText} - ${errorData.error.message}`);
   }
 
@@ -301,6 +307,12 @@ async function processChunkWithAPI(prompt, geminiApiKey, tabId, chunkIndex) {
 
   if (!response.ok) {
     const errorData = await response.json();
+    
+    // 429 에러 (할당량 초과)에 대한 특별 처리
+    if (response.status === 429) {
+      throw new Error(`🚫 API 사용량 제한에 도달했습니다\n\nGemini API의 무료 할당량을 모두 사용했습니다.\n• 일일 할당량이 재설정될 때까지 기다려주세요\n• 또는 Google AI Studio에서 유료 플랜을 확인해보세요\n\n자세한 정보: https://ai.google.dev/gemini-api/docs/rate-limits`);
+    }
+    
     throw new Error(`API Error: ${response.status} ${response.statusText} - ${errorData.error.message}`);
   }
 
