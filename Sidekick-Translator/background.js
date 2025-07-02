@@ -334,7 +334,42 @@ async function processChunkWithAPI(prompt, geminiApiKey, tabId, chunkIndex) {
   try {
     const jsonMatch = textContent.match(/```json\s*\n?([\s\S]*?)(?:\n?```|$)/);
     const jsonContent = jsonMatch ? jsonMatch[1] : textContent;
-    return JSON.parse(jsonContent);
+    
+    // JSON 파싱 시도
+    let result;
+    try {
+      result = JSON.parse(jsonContent);
+    } catch (parseError) {
+      // JSON 파싱 실패 시 텍스트에서 직접 추출 시도
+      console.warn(`[background.js] JSON parsing failed for chunk ${chunkIndex}, attempting text extraction:`, parseError);
+      
+      // 텍스트에서 직접 번역 내용 추출
+      const translatedTextMatch = textContent.match(/"translated_text":\s*"([^"]*(?:\\.[^"]*)*)"/) || 
+                                 textContent.match(/translated_text[:\s]*([^\n]+)/);
+      
+      if (translatedTextMatch) {
+        const extractedText = translatedTextMatch[1]
+          .replace(/\\n/g, '\n')
+          .replace(/\\"/g, '"')
+          .replace(/\\t/g, '\t')
+          .replace(/\\\\/g, '\\');
+        
+        result = {
+          chunk_index: chunkIndex,
+          translated_text: extractedText
+        };
+        console.log(`[background.js] Successfully extracted text from chunk ${chunkIndex}`);
+      } else {
+        // 마지막 수단: 전체 텍스트를 번역 결과로 사용
+        result = {
+          chunk_index: chunkIndex,
+          translated_text: textContent.replace(/```json|```/g, '').trim()
+        };
+        console.log(`[background.js] Used full text as fallback for chunk ${chunkIndex}`);
+      }
+    }
+    
+    return result;
   } catch (jsonError) {
     console.error(`[background.js] JSON parsing error for chunk ${chunkIndex}:`, jsonError);
     throw new Error(`청크 ${chunkIndex + 1} 처리 오류: ${jsonError.message}`);

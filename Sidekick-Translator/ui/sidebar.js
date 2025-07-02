@@ -115,6 +115,9 @@ document.addEventListener('DOMContentLoaded', () => {
     summaryEl.innerHTML = ''; // Clear previous content
     translationEl.innerHTML = ''; // Clear previous content
     
+    // Export 버튼 숨기기
+    document.getElementById('export-btn').style.display = 'none';
+    
     // Reset streaming state
     isStreaming = false;
     streamingText = '';
@@ -205,6 +208,11 @@ document.addEventListener('DOMContentLoaded', () => {
         // Remove cursor from the display and show final extracted content
         summaryEl.innerHTML = currentSummary || streamingText;
         translationEl.innerHTML = currentTranslation || streamingText;
+        
+        // Export 버튼 표시 (스트리밍 완료)
+        if (currentSummary || currentTranslation) {
+          document.getElementById('export-btn').style.display = 'inline-flex';
+        }
       }
       
     } else if (message.type === 'DISPLAY_RESULTS') {
@@ -217,6 +225,9 @@ document.addEventListener('DOMContentLoaded', () => {
       
       loadingView.style.display = 'none';
       resultView.style.display = 'block';
+      
+      // Export 버튼 표시 (번역 완료)
+      document.getElementById('export-btn').style.display = 'inline-flex';
       
       // Add a small delay for better UX transition
       setTimeout(() => {
@@ -233,6 +244,9 @@ document.addEventListener('DOMContentLoaded', () => {
         clearTimeout(streamingTimer);
         streamingTimer = null;
       }
+      
+      // Export 버튼 숨기기 (에러 상태)
+      document.getElementById('export-btn').style.display = 'none';
       
       loadingView.style.display = 'none';
       errorView.style.display = 'block';

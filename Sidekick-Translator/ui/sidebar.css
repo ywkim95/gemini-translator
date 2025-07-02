@@ -73,6 +73,8 @@ body {
   top: 0; /* 상단에 고정 */
   background-color: #f0f2f5; /* 스크롤 시 내용이 비치지 않도록 배경색 지정 */
   z-index: 1; /* 다른 내용 위에 표시 */
+  flex-wrap: wrap;
+  gap: 8px;
 }
 
 .width-controls button {
@@ -180,27 +182,21 @@ body {
   background-color: #003d9e;
 }
 
-/* Export Section */
-.export-section {
-  margin-top: 20px;
-  padding-top: 15px;
-  border-top: 1px solid #ddd;
-  text-align: center;
-}
-
+/* Export Button (Header) */
 .export-btn {
   background-color: #28a745;
   color: white;
   border: none;
-  padding: 10px 20px;
-  border-radius: 6px;
+  padding: 6px 12px;
+  border-radius: 4px;
   cursor: pointer;
-  font-size: 14px;
+  font-size: 12px;
   font-weight: 500;
   transition: background-color 0.2s ease;
   display: inline-flex;
   align-items: center;
-  gap: 5px;
+  gap: 4px;
+  order: -1; /* 가장 먼저 표시 */
 }
 
 .export-btn:hover {
