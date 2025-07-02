@@ -288,14 +288,53 @@ ${chunkText}`;
     }
   }
   
-  const combinedResult = {
-    summary: `이 문서는 ${textChunks.length}개 섹션으로 나뉘어 번역되었습니다.`,
-    translated_text: chunkResults.map(chunk => chunk.translated_text).join('\n\n')
-  };
+  // 모든 청크 번역 완료 후 전체 내용으로 요약 생성
+  const fullTranslatedText = chunkResults.map(chunk => chunk.translated_text).join('\n\n');
   
-  await chrome.storage.local.set({ [cacheKey]: combinedResult });
-  chrome.tabs.sendMessage(tabId, { type: 'STREAMING_END' });
-  chrome.tabs.sendMessage(tabId, { type: 'DISPLAY_RESULTS', payload: combinedResult });
+  console.log('[background.js] Generating summary for combined chunks');
+  
+  try {
+    // 요약 생성을 위한 별도 API 호출
+    const summaryPrompt = `# 페르소나 (Persona)
+당신은 고도로 숙련된 정보 분석가입니다.
+
+# 지시사항 (Instruction)
+아래 번역된 긴 텍스트를 읽고 핵심 내용을 간결하게 요약해주세요.
+당신의 응답은 반드시 지정된 JSON 형식만을 포함해야 합니다.
+
+## 최종 출력 JSON 형식
+{
+  "summary": "이곳에는 문서의 핵심 내용을 3-5줄로 간결하게 요약한 결과를 마크다운 형식으로 넣어주세요."
+}
+
+# 요약할 번역 텍스트 (Text to Summarize)
+
+${fullTranslatedText}`;
+
+    const summaryResult = await processChunkWithAPI(summaryPrompt, geminiApiKey, tabId, -1);
+    
+    const combinedResult = {
+      summary: summaryResult.summary || summaryResult.translated_text || `이 문서는 ${textChunks.length}개 섹션으로 나뉘어 번역되었습니다.`,
+      translated_text: fullTranslatedText
+    };
+    
+    await chrome.storage.local.set({ [cacheKey]: combinedResult });
+    chrome.tabs.sendMessage(tabId, { type: 'STREAMING_END' });
+    chrome.tabs.sendMessage(tabId, { type: 'DISPLAY_RESULTS', payload: combinedResult });
+    
+  } catch (summaryError) {
+    console.error('[background.js] Error generating summary:', summaryError);
+    
+    // 요약 생성 실패 시 기본 결과 사용
+    const combinedResult = {
+      summary: `이 문서는 ${textChunks.length}개 섹션으로 나뉘어 번역되었습니다.`,
+      translated_text: fullTranslatedText
+    };
+    
+    await chrome.storage.local.set({ [cacheKey]: combinedResult });
+    chrome.tabs.sendMessage(tabId, { type: 'STREAMING_END' });
+    chrome.tabs.sendMessage(tabId, { type: 'DISPLAY_RESULTS', payload: combinedResult });
+  }
 }
 
 // 개별 청크 API 호출 함수
@@ -343,29 +382,54 @@ async function processChunkWithAPI(prompt, geminiApiKey, tabId, chunkIndex) {
       // JSON 파싱 실패 시 텍스트에서 직접 추출 시도
       console.warn(`[background.js] JSON parsing failed for chunk ${chunkIndex}, attempting text extraction:`, parseError);
       
-      // 텍스트에서 직접 번역 내용 추출
-      const translatedTextMatch = textContent.match(/"translated_text":\s*"([^"]*(?:\\.[^"]*)*)"/) || 
-                                 textContent.match(/translated_text[:\s]*([^\n]+)/);
-      
-      if (translatedTextMatch) {
-        const extractedText = translatedTextMatch[1]
-          .replace(/\\n/g, '\n')
-          .replace(/\\"/g, '"')
-          .replace(/\\t/g, '\t')
-          .replace(/\\\\/g, '\\');
+      // 요약 생성용인지 번역용인지 구분하여 처리
+      if (chunkIndex === -1) {
+        // 요약 생성용
+        const summaryMatch = textContent.match(/"summary":\s*"([^"]*(?:\\.[^"]*)*)"/) || 
+                            textContent.match(/summary[:\s]*([^\n]+)/);
         
-        result = {
-          chunk_index: chunkIndex,
-          translated_text: extractedText
-        };
-        console.log(`[background.js] Successfully extracted text from chunk ${chunkIndex}`);
+        if (summaryMatch) {
+          const extractedSummary = summaryMatch[1]
+            .replace(/\\n/g, '\n')
+            .replace(/\\"/g, '"')
+            .replace(/\\t/g, '\t')
+            .replace(/\\\\/g, '\\');
+          
+          result = {
+            summary: extractedSummary
+          };
+          console.log(`[background.js] Successfully extracted summary`);
+        } else {
+          result = {
+            summary: textContent.replace(/```json|```/g, '').trim()
+          };
+          console.log(`[background.js] Used full text as summary fallback`);
+        }
       } else {
-        // 마지막 수단: 전체 텍스트를 번역 결과로 사용
-        result = {
-          chunk_index: chunkIndex,
-          translated_text: textContent.replace(/```json|```/g, '').trim()
-        };
-        console.log(`[background.js] Used full text as fallback for chunk ${chunkIndex}`);
+        // 번역용
+        const translatedTextMatch = textContent.match(/"translated_text":\s*"([^"]*(?:\\.[^"]*)*)"/) || 
+                                   textContent.match(/translated_text[:\s]*([^\n]+)/);
+        
+        if (translatedTextMatch) {
+          const extractedText = translatedTextMatch[1]
+            .replace(/\\n/g, '\n')
+            .replace(/\\"/g, '"')
+            .replace(/\\t/g, '\t')
+            .replace(/\\\\/g, '\\');
+          
+          result = {
+            chunk_index: chunkIndex,
+            translated_text: extractedText
+          };
+          console.log(`[background.js] Successfully extracted text from chunk ${chunkIndex}`);
+        } else {
+          // 마지막 수단: 전체 텍스트를 번역 결과로 사용
+          result = {
+            chunk_index: chunkIndex,
+            translated_text: textContent.replace(/```json|```/g, '').trim()
+          };
+          console.log(`[background.js] Used full text as fallback for chunk ${chunkIndex}`);
+        }
       }
     }
     
