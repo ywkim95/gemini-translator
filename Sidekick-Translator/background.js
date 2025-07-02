@@ -115,31 +115,49 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         const reader = response.body.getReader();
         const decoder = new TextDecoder();
         let accumulatedTextContent = ''; // This will accumulate the actual text from parts[0].text
-        let fullStreamResponse = ''; // This will accumulate the raw stream data
+        let buffer = ''; // Accumulate raw text from stream
         let done = false;
 
         while (!done) {
           const { value, done: readerDone } = await reader.read();
           done = readerDone;
           const chunk = decoder.decode(value, { stream: true });
-          fullStreamResponse += chunk; // Accumulate the raw stream data
+          buffer += chunk;
 
-          // Each chunk might contain multiple JSON objects (GenerateContentResponse)
-          // Split by newline to handle multiple JSON objects in one chunk
-          const lines = chunk.split('\n');
-          for (const line of lines) {
-            if (line.trim() === '') continue;
+          // Process complete JSON objects from the buffer
+          let newlineIndex;
+          while ((newlineIndex = buffer.indexOf('\n')) !== -1) {
+            const line = buffer.substring(0, newlineIndex).trim();
+            buffer = buffer.substring(newlineIndex + 1);
+
+            if (line === '') continue;
+
             try {
               const parsedChunk = JSON.parse(line);
               if (parsedChunk.candidates && parsedChunk.candidates[0] && parsedChunk.candidates[0].content && parsedChunk.candidates[0].content.parts && parsedChunk.candidates[0].content.parts[0]) {
                 const newText = parsedChunk.candidates[0].content.parts[0].text;
                 accumulatedTextContent += newText;
-                // Send partial results to sidebar.js
                 chrome.tabs.sendMessage(tabId, { type: 'DISPLAY_STREAM_CHUNK', payload: { text: newText } });
               }
             } catch (e) {
-              console.warn('Could not parse stream chunk as JSON (might be partial or non-JSON data):', line, e);
+              console.warn('Could not parse stream line as JSON:', line, e);
+              // If parsing fails, it might be a partial JSON object, so we break and wait for more data
+              break;
             }
+          }
+        }
+
+        // After the stream is done, process any remaining data in the buffer
+        if (buffer.trim() !== '') {
+          try {
+            const parsedChunk = JSON.parse(buffer);
+            if (parsedChunk.candidates && parsedChunk.candidates[0] && parsedChunk.candidates[0].content && parsedChunk.candidates[0].content.parts && parsedChunk.candidates[0].content.parts[0]) {
+              const newText = parsedChunk.candidates[0].content.parts[0].text;
+              accumulatedTextContent += newText;
+              chrome.tabs.sendMessage(tabId, { type: 'DISPLAY_STREAM_CHUNK', payload: { text: newText } });
+            }
+          } catch (e) {
+            console.warn('Could not parse final stream buffer as JSON:', buffer, e);
           }
         }
 
