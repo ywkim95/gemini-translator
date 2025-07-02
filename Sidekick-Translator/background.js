@@ -381,9 +381,6 @@ async function handleFileExport(payload, tabId) {
   console.log('[background.js] Handling file export request');
   
   try {
-    // 저장된 export 경로 가져오기 (참고용)
-    const settings = await chrome.storage.sync.get(['exportPath']);
-    const exportPath = settings.exportPath;
 
     // 파일명 생성 (현재 날짜와 시간 포함)
     const now = new Date();
@@ -400,7 +397,7 @@ async function handleFileExport(payload, tabId) {
 
 **URL:** ${payload.url}  
 **번역 일시:** ${now.toLocaleString('ko-KR')}  
-**저장 위치:** 브라우저 기본 다운로드 폴더${exportPath ? ` (설정된 경로: ${exportPath})` : ''}
+**저장 위치:** 브라우저 기본 다운로드 폴더
 
 ---
 
