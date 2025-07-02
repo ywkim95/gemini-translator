@@ -19,12 +19,16 @@
   "web_accessible_resources": [
     {
       "resources": [
-        "/scripts/readability.js",
-        "/scripts/showdown.js",
-        "/ui/sidebar.css"
+        "ui/sidebar.html",
+        "ui/sidebar.css",
+        "ui/sidebar.js",
+        "scripts/showdown.js"
       ],
       "matches": ["<all_urls>"]
     }
   ],
-  "options_page": "options.html"
+  "options_page": "options.html",
+  "content_security_policy": {
+    "extension_pages": "script-src 'self'; object-src 'self'"
+  }
 }

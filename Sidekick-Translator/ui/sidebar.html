@@ -1,0 +1,43 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8">
+  <link rel="stylesheet" href="sidebar.css">
+</head>
+<body>
+  <div class="container">
+    <div class="header">
+      Sidekick Translator
+      <div class="width-controls">
+        <button id="btn-width-small" data-width="300">Small</button>
+        <button id="btn-width-medium" data-width="600">Medium</button>
+        <button id="btn-width-large" data-width="900">Large</button>
+      </div>
+      <button id="analyze-btn" class="analyze-btn">요약/번역</button>
+      <button id="close-sidebar-btn" class="close-btn">&times;</button>
+    </div>
+    <div id="st-initial-state" class="state-view">
+      <button id="start-analysis-btn">Start Analysis</button>
+    </div>
+    <div id="st-loading-state" class="state-view" style="display:none;">
+      <div class="spinner"></div>
+      <p>Gemini가 페이지를 분석 중입니다...</p>
+    </div>
+    <div id="st-result-state" class="state-view" style="display:none;">
+      <div class="section">
+        <h3>핵심 요약</h3>
+        <div id="st-summary"></div>
+      </div>
+      <div class="section">
+        <h3>전체 번역문</h3>
+        <div id="st-translation"></div>
+      </div>
+    </div>
+    <div id="st-error-state" class="state-view" style="display:none;">
+      <p id="st-error-message"></p>
+    </div>
+  </div>
+  <script src="/scripts/showdown.js"></script>
+  <script src="sidebar.js"></script>
+</body>
+</html>

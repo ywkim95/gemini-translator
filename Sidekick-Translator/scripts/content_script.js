@@ -1,144 +1,92 @@
-const createSidebar = () => {
-  const sidebarRoot = document.createElement('div');
-  sidebarRoot.id = 'sidekick-translator-root';
-  document.body.appendChild(sidebarRoot);
+(() => {
+  // 중복 주입 방지
+  if (window.isSidekickInjected) {
+    return;
+  }
+  window.isSidekickInjected = true;
 
-  // 초기 너비를 뷰포트 너비의 25%로 설정 (CSS의 min/max-width와 연동)
-  let initialWidth = window.innerWidth * 0.25;
-  if (initialWidth < 300) initialWidth = 300;
-  if (initialWidth > 1000) initialWidth = 1000;
-  sidebarRoot.style.width = `${initialWidth}px`;
+  let sidebarIframe = null;
 
-  const iframe = document.createElement('iframe');
-  iframe.id = 'st-iframe';
-  iframe.style.height = '100%'; 
-  iframe.style.width = '100%';
-  sidebarRoot.appendChild(iframe);
+  const createSidebar = () => {
+    sidebarIframe = document.createElement('iframe');
+    sidebarIframe.id = 'sidekick-translator-iframe';
+    sidebarIframe.src = chrome.runtime.getURL('ui/sidebar.html');
+    sidebarIframe.style.cssText = `
+      position: fixed !important;
+      top: 0 !important;
+      right: 0 !important;
+      height: 100% !important;
+      width: 350px !important; /* 기본 너비 */
+      min-width: 300px !important;
+      max-width: 90vw !important;
+      border: none !important;
+      z-index: 2147483647 !important;
+      box-shadow: -2px 0 15px rgba(0,0,0,0.2) !important;
+      transition: width 0.2s ease-in-out !important;
+    `;
+    document.body.appendChild(sidebarIframe);
+  };
 
-  // 사이드바 크기 및 위치 설정 (화면 오른쪽 전체 높이 고정)
-  sidebarRoot.style.position = 'fixed';
-  sidebarRoot.style.top = '0';
-  sidebarRoot.style.right = '0';
-  sidebarRoot.style.height = '100%';
-  sidebarRoot.style.zIndex = '2147483647';
-
-  const iframeContent = `
-    <html>
-    <head><link rel="stylesheet" href="${chrome.runtime.getURL('ui/sidebar.css')}"></head>
-    <body>
-        <div class="container">
-            <div class="header">
-                Sidekick Translator
-                <div class="width-controls">
-                    <button id="btn-width-small" data-width="300">Small</button>
-                    <button id="btn-width-medium" data-width="600">Medium</button>
-                    <button id="btn-width-large" data-width="900">Large</button>
-                </div>
-                <button id="close-sidebar-btn" class="close-btn">&times;</button>
-            </div>
-            <div id="st-loading-state" class="state-view">
-                <div class="spinner"></div>
-                <p>Gemini가 페이지를 분석 중입니다...</p>
-            </div>
-            <div id="st-result-state" class="state-view" style="display:none;">
-                <div class="section">
-                    <h3>핵심 요약</h3>
-                    <div id="st-summary"></div>
-                </div>
-                <div class="section">
-                    <h3>전체 번역문</h3>
-                    <div id="st-translation"></div>
-                </div>
-            </div>
-            <div id="st-error-state" class="state-view" style="display:none;">
-                <p id="st-error-message"></p>
-            </div>
-        </div>
-    </body>
-    </html>
-  `;
-
-  iframe.srcdoc = iframeContent;
-  iframe.onload = () => {
-    const doc = iframe.contentDocument;
-    // 너비 조절 버튼 이벤트 리스너 추가
-    doc.getElementById('btn-width-small').addEventListener('click', () => {
-      sidebarRoot.style.width = '300px';
-    });
-    doc.getElementById('btn-width-medium').addEventListener('click', () => {
-      sidebarRoot.style.width = '600px';
-    });
-    doc.getElementById('btn-width-large').addEventListener('click', () => {
-      sidebarRoot.style.width = '900px';
-    });
-
-    // 닫기 버튼 이벤트 리스너 추가
-    doc.getElementById('close-sidebar-btn').addEventListener('click', () => {
-      window.hideSidekickSidebar(); // 사이드바 숨김 함수 호출
-      // 사이드바 닫힘 상태를 background.js에 알림
-      chrome.runtime.sendMessage({ type: 'UPDATE_SIDEBAR_STATE', isSidebarOpen: false });
-    });
-
-    const isPdf = document.contentType === 'application/pdf';
-    let textContent = '';
-    let errorMessage = '';
-
-    if (isPdf) {
-      textContent = document.body.innerText;
-      if (!textContent || textContent.trim().length < 50) {
-        errorMessage = 'PDF에서 텍스트를 추출할 수 없습니다. PDF 내용이 이미지이거나 복잡한 레이아웃일 수 있습니다.';
-      }
+  const toggleSidebar = () => {
+    if (sidebarIframe && document.body.contains(sidebarIframe)) {
+      sidebarIframe.remove();
     } else {
-      const documentClone = document.cloneNode(true);
-      const article = new window.Readability(documentClone).parse();
-      textContent = article ? article.textContent : document.body.innerText;
-      if (!textContent || textContent.trim().length < 50) {
-        errorMessage = '웹페이지에서 유의미한 텍스트를 추출할 수 없습니다.';
-      }
-    }
-    
-    if (errorMessage) {
-      doc.getElementById('st-loading-state').style.display = 'none';
-      doc.getElementById('st-error-state').style.display = 'block';
-      doc.getElementById('st-error-message').innerText = errorMessage;
-    } else {
-      chrome.runtime.sendMessage({ type: 'ANALYZE_PAGE', text: textContent, isPdf: isPdf });
+      createSidebar();
     }
   };
-};
 
-// 전역으로 노출하여 background.js에서 호출 가능하도록 함
-window.showSidekickSidebar = () => {
-  if (!document.getElementById('sidekick-translator-root')) {
-    createSidebar();
-  }
-};
-
-window.hideSidekickSidebar = () => {
-  const sidebarRoot = document.getElementById('sidekick-translator-root');
-  if (sidebarRoot) {
-    sidebarRoot.remove();
-  }
-};
-
-// background.js로부터 메시지 수신 (DISPLAY_RESULTS, DISPLAY_ERROR)
-chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
-  const iframe = document.getElementById('st-iframe');
-  if (!iframe) return; // iframe이 없으면 처리하지 않음
-
-  const doc = iframe.contentDocument;
-  const converter = new showdown.Converter(); // Showdown.js 컨버터 초기화
-
-  if (message.type === 'DISPLAY_RESULTS') {
-    doc.getElementById('st-loading-state').style.display = 'none';
-    doc.getElementById('st-result-state').style.display = 'block';
+  chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+    if (message.type === 'TOGGLE_SIDEBAR') {
+      toggleSidebar();
+      sendResponse({ status: "toggled" });
+      return true;
+    } 
     
-    // 마크다운을 HTML로 변환하여 삽입
-    doc.getElementById('st-summary').innerHTML = converter.makeHtml(message.payload.summary);
-    doc.getElementById('st-translation').innerHTML = converter.makeHtml(message.payload.translated_text);
-  } else if (message.type === 'DISPLAY_ERROR') {
-    doc.getElementById('st-loading-state').style.display = 'none';
-    doc.getElementById('st-error-state').style.display = 'block';
-    doc.getElementById('st-error-message').innerText = message.payload.message;
-  }
-});
+    // "ANALYZE_PAGE" 요청을 받으면 Readability.js로 본문을 추출하여 background.js로 보냄
+    if (message.type === 'ANALYZE_PAGE') {
+        console.log("[content_script.js] Received ANALYZE_PAGE request.");
+        try {
+            if (typeof Readability === 'undefined') {
+                throw new Error('Readability library not available.');
+            }
+            const documentClone = document.cloneNode(true);
+            const article = new Readability(documentClone).parse();
+            const textContent = article ? article.textContent : document.body.innerText;
+
+            if (!textContent || textContent.trim().length < 100) {
+                 throw new Error('Could not extract meaningful text from the page.');
+            }
+            
+            // background.js로 추출한 텍스트를 보내 분석 요청
+            chrome.runtime.sendMessage({ type: "ANALYZE_TEXT", text: textContent });
+            sendResponse({ status: "analysis_started" });
+
+        } catch (error) {
+            console.error("[content_script.js] Error extracting text:", error);
+            // 에러를 sidebar.js로 다시 보냄
+            if (sidebarIframe && sidebarIframe.contentWindow) {
+                sidebarIframe.contentWindow.postMessage({ type: 'DISPLAY_ERROR', payload: { message: error.message } }, '*');
+            }
+            sendResponse({ status: "error", error: error.message });
+        }
+        return true; // 비동기 응답
+    }
+  });
+
+  // sidebar.js로부터 메시지 수신 (iframe 내부)
+  window.addEventListener('message', (event) => {
+    // 메시지 소스가 현재 페이지에 추가된 iframe인지 확인
+    if (!sidebarIframe || event.source !== sidebarIframe.contentWindow) {
+      return;
+    }
+
+    if (event.data.type === 'CLOSE_SIDEKICK_SIDEBAR') {
+      toggleSidebar();
+    } else if (event.data.type === 'RESIZE_SIDEBAR') {
+      if (sidebarIframe) {
+        sidebarIframe.style.width = event.data.width;
+      }
+    }
+  });
+
+})();
