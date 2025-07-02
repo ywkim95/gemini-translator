@@ -5,6 +5,18 @@ html, body {
   padding: 0; /* Ensure no padding on html, body */
 }
 
+/* Streaming cursor animation */
+.streaming-cursor {
+  animation: blink 1s infinite;
+  color: #1c1e21;
+  font-weight: bold;
+}
+
+@keyframes blink {
+  0%, 50% { opacity: 1; }
+  51%, 100% { opacity: 0; }
+}
+
 body {
   font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
   background-color: #f0f2f5;
