@@ -123,6 +123,9 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 
         // Initialize streaming to UI
         chrome.tabs.sendMessage(tabId, { type: 'STREAMING_START' });
+        
+        // Store complete response array for final parsing
+        let completeResponseArray = [];
 
         while (!done) {
           const { value, done: readerDone } = await reader.read();
@@ -134,7 +137,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
           // console.log(`[background.js] Chunk ${chunkCount}: ${chunk}`);
           // console.log(`[background.js] Current buffer length: ${buffer.length}`);
           
-          // Try to process complete JSON objects as they arrive
+          // Try to process complete JSON objects as they arrive for streaming
           let separatorIndex;
           while ((separatorIndex = buffer.indexOf('},\n{')) !== -1) {
             const jsonStr = buffer.substring(0, separatorIndex + 1).trim();
@@ -144,6 +147,8 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 
             try {
               const parsedChunk = JSON.parse(jsonStr);
+              completeResponseArray.push(parsedChunk); // Store for final parsing
+              
               if (parsedChunk.candidates && parsedChunk.candidates[0] && parsedChunk.candidates[0].content && parsedChunk.candidates[0].content.parts && parsedChunk.candidates[0].content.parts[0]) {
                 const newText = parsedChunk.candidates[0].content.parts[0].text;
                 accumulatedTextContent += newText;
@@ -173,6 +178,8 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
           
           try {
             const parsedChunk = JSON.parse(finalBuffer);
+            completeResponseArray.push(parsedChunk); // Store for final parsing
+            
             if (parsedChunk.candidates && parsedChunk.candidates[0] && parsedChunk.candidates[0].content && parsedChunk.candidates[0].content.parts && parsedChunk.candidates[0].content.parts[0]) {
               const newText = parsedChunk.candidates[0].content.parts[0].text;
               accumulatedTextContent += newText;
@@ -189,26 +196,15 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
           }
         }
 
-        console.log('[background.js] Stream complete. Final accumulated text content length:', accumulatedTextContent.length);
+        console.log('[background.js] Stream complete. Response array length:', completeResponseArray.length);
+        console.log('[background.js] Final accumulated text content length:', accumulatedTextContent.length);
 
-        const rawText = accumulatedTextContent; // Now rawText is the actual model-generated text, which should be the final JSON
-        let jsonString = rawText;
-
-        // Check if the response is wrapped in a markdown code block
-        const jsonCodeBlockMatch = rawText.match(/```json\n([\s\S]*?)\n```/);
-        if (jsonCodeBlockMatch && jsonCodeBlockMatch[1]) {
-          jsonString = jsonCodeBlockMatch[1];
-        } else {
-          // Fallback to finding the first { and last }
-          const jsonStartIndex = rawText.indexOf('{');
-          const jsonEndIndex = rawText.lastIndexOf('}');
-          if (jsonStartIndex !== -1 && jsonEndIndex !== -1 && jsonEndIndex > jsonStartIndex) {
-            jsonString = rawText.substring(jsonStartIndex, jsonEndIndex + 1);
-          } else {
-            throw new Error('API 응답에서 유효한 JSON 객체를 찾을 수 없습니다.');
-          }
-        }
+        // Use the accumulated text content to extract the final JSON response
+        const rawText = accumulatedTextContent;
         let geminiResponse;
+        
+        console.log('[background.js] Attempting to parse final response from accumulated text...');
+        
         try {
           // Use regex to extract summary and translated_text content more reliably
           const summaryMatch = rawText.match(/"summary":\s*"([^]*?)(?=",\s*"translated_text")/);
@@ -221,11 +217,27 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
             };
             console.log('[background.js] Successfully extracted summary and translated_text using regex');
           } else {
-            // Fallback to JSON parsing if regex fails
+            // Fallback: try to find JSON structure in the raw text
+            const jsonCodeBlockMatch = rawText.match(/```json\n([\s\S]*?)\n```/);
+            let jsonString = rawText;
+            
+            if (jsonCodeBlockMatch && jsonCodeBlockMatch[1]) {
+              jsonString = jsonCodeBlockMatch[1];
+            } else {
+              // Fallback to finding the first { and last }
+              const jsonStartIndex = rawText.indexOf('{');
+              const jsonEndIndex = rawText.lastIndexOf('}');
+              if (jsonStartIndex !== -1 && jsonEndIndex !== -1 && jsonEndIndex > jsonStartIndex) {
+                jsonString = rawText.substring(jsonStartIndex, jsonEndIndex + 1);
+              } else {
+                throw new Error('정규식과 JSON 구조 모두에서 유효한 응답을 찾을 수 없습니다.');
+              }
+            }
+            
             geminiResponse = JSON.parse(jsonString);
           }
         } catch (parseError) {
-          console.error('Both regex and JSON parsing failed. Raw text:', rawText.substring(0, 500) + '...');
+          console.error('All parsing methods failed. Raw text sample:', rawText.substring(0, 500) + '...');
           console.error('Parse error:', parseError.message);
           throw new Error(`응답 처리 오류: ${parseError.message}`);
         }
