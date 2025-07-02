@@ -71,6 +71,20 @@
         }
         return true; // 비동기 응답
     }
+
+    // Export 요청 처리
+    if (message.type === 'EXPORT_CONTENT') {
+        console.log("[content_script.js] Received EXPORT_CONTENT request.");
+        
+        // background.js로 export 요청 전달
+        chrome.runtime.sendMessage({ 
+            type: "EXPORT_TO_FILE",
+            payload: message.payload
+        });
+        
+        sendResponse({ status: "export_started" });
+        return true;
+    }
   });
 
   // sidebar.js로부터 메시지 수신 (iframe 내부)

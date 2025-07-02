@@ -3,7 +3,7 @@
   "name": "Sidekick Translator",
   "version": "1.0",
   "description": "현재 페이지를 Gemini로 요약 및 번역합니다.",
-  "permissions": ["activeTab", "scripting", "storage"],
+  "permissions": ["activeTab", "scripting", "storage", "downloads"],
   "host_permissions": ["<all_urls>"],
   "action": {
     "default_title": "페이지 요약/번역 실행"

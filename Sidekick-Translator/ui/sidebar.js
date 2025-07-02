@@ -141,6 +141,27 @@ document.addEventListener('DOMContentLoaded', () => {
   document.getElementById('btn-width-medium').addEventListener('click', () => window.parent.postMessage({ type: 'RESIZE_SIDEBAR', width: '600px' }, '*'));
   document.getElementById('btn-width-large').addEventListener('click', () => window.parent.postMessage({ type: 'RESIZE_SIDEBAR', width: '900px' }, '*'));
 
+  // Export 버튼
+  document.getElementById('export-btn').addEventListener('click', () => {
+    if (!currentSummary && !currentTranslation) {
+      alert('저장할 내용이 없습니다. 먼저 페이지를 분석해주세요.');
+      return;
+    }
+
+    // content_script에 export 요청
+    chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
+      chrome.tabs.sendMessage(tabs[0].id, { 
+        type: "EXPORT_CONTENT",
+        payload: {
+          summary: currentSummary,
+          translation: currentTranslation,
+          url: tabs[0].url,
+          title: tabs[0].title
+        }
+      });
+    });
+  });
+
 
   // background.js로부터 결과/에러 수신
   chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
@@ -216,6 +237,12 @@ document.addEventListener('DOMContentLoaded', () => {
       loadingView.style.display = 'none';
       errorView.style.display = 'block';
       errorMessage.textContent = message.error || (message.payload && message.payload.message) || 'Unknown error occurred';
+      
+    } else if (message.type === 'EXPORT_SUCCESS') {
+      alert(message.message);
+      
+    } else if (message.type === 'EXPORT_ERROR') {
+      alert('Export 오류: ' + message.error);
     }
   });
 });
