@@ -123,9 +123,6 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 
         // Initialize streaming to UI
         chrome.tabs.sendMessage(tabId, { type: 'STREAMING_START' });
-        
-        // Store complete response array for final parsing
-        let completeResponseArray = [];
 
         while (!done) {
           const { value, done: readerDone } = await reader.read();
@@ -134,69 +131,42 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
           buffer += chunk;
           chunkCount++;
 
-          // console.log(`[background.js] Chunk ${chunkCount}: ${chunk}`);
-          // console.log(`[background.js] Current buffer length: ${buffer.length}`);
-          
-          // Try to process complete JSON objects as they arrive for streaming
-          let separatorIndex;
-          while ((separatorIndex = buffer.indexOf('},\n{')) !== -1) {
-            const jsonStr = buffer.substring(0, separatorIndex + 1).trim();
-            buffer = '{' + buffer.substring(separatorIndex + 3);
-
-            if (jsonStr === '') continue;
-
-            try {
-              const parsedChunk = JSON.parse(jsonStr);
-              completeResponseArray.push(parsedChunk); // Store for final parsing
-              
-              if (parsedChunk.candidates && parsedChunk.candidates[0] && parsedChunk.candidates[0].content && parsedChunk.candidates[0].content.parts && parsedChunk.candidates[0].content.parts[0]) {
-                const newText = parsedChunk.candidates[0].content.parts[0].text;
-                accumulatedTextContent += newText;
-                // console.log('[background.js] Streaming text chunk:', newText.substring(0, 50) + '...');
-                
-                // Send streaming chunk to UI in real-time
-                chrome.tabs.sendMessage(tabId, { 
-                  type: 'DISPLAY_STREAM_CHUNK', 
-                  payload: { text: newText } 
-                });
-              }
-            } catch (e) {
-              console.warn('[background.js] Could not parse partial JSON object:', jsonStr.substring(0, 100) + '...');
-              // If parsing fails, put the text back and wait for more data
-              buffer = jsonStr + ',\n{' + buffer.substring(1);
-              break;
-            }
-          }
+          console.log(`[background.js] Chunk ${chunkCount}: ${chunk.substring(0, 100)}...`);
+          console.log(`[background.js] Current buffer length: ${buffer.length}`);
         }
 
-        // Process any remaining data in the buffer
-        if (buffer.trim() !== '') {
-          let finalBuffer = buffer.trim();
-          if (finalBuffer.endsWith(',')) {
-            finalBuffer = finalBuffer.slice(0, -1);
-          }
+        console.log('[background.js] Stream complete. Processing full response...');
+
+        // Parse the entire response as JSON array
+        try {
+          const responseArray = JSON.parse(buffer);
+          console.log('[background.js] Successfully parsed response array, length:', responseArray.length);
           
-          try {
-            const parsedChunk = JSON.parse(finalBuffer);
-            completeResponseArray.push(parsedChunk); // Store for final parsing
+          // Extract text from each response object and accumulate
+          for (const responseObj of responseArray) {
+            console.log('[background.js] Processing response object:', responseObj);
             
-            if (parsedChunk.candidates && parsedChunk.candidates[0] && parsedChunk.candidates[0].content && parsedChunk.candidates[0].content.parts && parsedChunk.candidates[0].content.parts[0]) {
-              const newText = parsedChunk.candidates[0].content.parts[0].text;
+            if (responseObj.candidates && responseObj.candidates[0] && responseObj.candidates[0].content && responseObj.candidates[0].content.parts && responseObj.candidates[0].content.parts[0]) {
+              const newText = responseObj.candidates[0].content.parts[0].text;
               accumulatedTextContent += newText;
-              console.log('[background.js] Final text chunk:', newText.substring(0, 50) + '...');
+              console.log('[background.js] Added text chunk:', newText.substring(0, 50) + '...');
               
-              // Send final streaming chunk to UI
+              // Send streaming chunk to UI
               chrome.tabs.sendMessage(tabId, { 
                 type: 'DISPLAY_STREAM_CHUNK', 
                 payload: { text: newText } 
               });
+              
+              // Add small delay for better streaming effect
+              await new Promise(resolve => setTimeout(resolve, 50));
             }
-          } catch (e) {
-            console.warn('[background.js] Could not parse final buffer as JSON:', finalBuffer.substring(0, 100) + '...');
           }
+        } catch (parseError) {
+          console.error('[background.js] Failed to parse response array:', parseError);
+          console.error('[background.js] Buffer content:', buffer.substring(0, 500) + '...');
+          throw new Error(`JSON 파싱 오류: ${parseError.message}`);
         }
 
-        console.log('[background.js] Stream complete. Response array length:', completeResponseArray.length);
         console.log('[background.js] Final accumulated text content length:', accumulatedTextContent.length);
 
         // Use the accumulated text content to extract the final JSON response
