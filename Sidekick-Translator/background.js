@@ -176,11 +176,24 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         }
         let geminiResponse;
         try {
-          geminiResponse = JSON.parse(jsonString);
+          // Use regex to extract summary and translated_text content more reliably
+          const summaryMatch = rawText.match(/"summary":\s*"([^]*?)(?=",\s*"translated_text")/);
+          const translatedMatch = rawText.match(/"translated_text":\s*"([^]*?)(?="\s*})/);
+          
+          if (summaryMatch && translatedMatch) {
+            geminiResponse = {
+              summary: summaryMatch[1].replace(/\\n/g, '\n').replace(/\\"/g, '"'),
+              translated_text: translatedMatch[1].replace(/\\n/g, '\n').replace(/\\"/g, '"')
+            };
+            console.log('[background.js] Successfully extracted summary and translated_text using regex');
+          } else {
+            // Fallback to JSON parsing if regex fails
+            geminiResponse = JSON.parse(jsonString);
+          }
         } catch (parseError) {
-          console.error('JSON parsing failed. Raw text:', rawText);
-          console.error('Attempted JSON string:', jsonString);
-          throw new Error(`JSON 파싱 오류: ${parseError.message}`);
+          console.error('Both regex and JSON parsing failed. Raw text:', rawText.substring(0, 500) + '...');
+          console.error('Parse error:', parseError.message);
+          throw new Error(`응답 처리 오류: ${parseError.message}`);
         }
 
         await chrome.storage.local.set({ [cacheKey]: geminiResponse });
