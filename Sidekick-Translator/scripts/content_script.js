@@ -16,7 +16,7 @@
       top: 0 !important;
       right: 0 !important;
       height: 100% !important;
-      width: 350px !important; /* 기본 너비 */
+      width: 600px !important; /* 기본 너비 */
       min-width: 300px !important;
       max-width: 90vw !important;
       border: none !important;
