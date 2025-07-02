@@ -134,7 +134,14 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
             throw new Error('API 응답에서 유효한 JSON 객체를 찾을 수 없습니다.');
           }
         }
-        const geminiResponse = JSON.parse(jsonString);
+        let geminiResponse;
+        try {
+          geminiResponse = JSON.parse(jsonString);
+        } catch (parseError) {
+          console.error('JSON parsing failed. Raw text:', rawText);
+          console.error('Attempted JSON string:', jsonString);
+          throw new Error(`JSON 파싱 오류: ${parseError.message}`);
+        }
 
         await chrome.storage.local.set({ [cacheKey]: geminiResponse });
         console.log('[background.js] Cached result for:', cacheKey);
