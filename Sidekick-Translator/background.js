@@ -98,26 +98,35 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         const requestBody = {
           contents: [{
             parts: [{ text: fullPrompt }]
-          }],
-          generationConfig: {
-            responseMimeType: "application/json",
-            maxOutputTokens: 8192
-          }
+          }]
         };
 
-        const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${geminiApiKey}`, {
+        const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:streamGenerateContent?key=${geminiApiKey}`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify(requestBody),
         });
 
-        const data = await response.json();
-
-        if (data.error || !data.candidates || !data.candidates[0].content.parts[0].text) {
-          throw new Error(data.error ? data.error.message : 'API 응답 형식이 올바르지 않습니다.');
+        if (!response.ok) {
+          const errorData = await response.json();
+          throw new Error(`API Error: ${response.status} ${response.statusText} - ${errorData.error.message}`);
         }
 
-        const rawText = data.candidates[0].content.parts[0].text;
+        const reader = response.body.getReader();
+        const decoder = new TextDecoder();
+        let result = '';
+        let done = false;
+
+        while (!done) {
+          const { value, done: readerDone } = await reader.read();
+          done = readerDone;
+          result += decoder.decode(value, { stream: true });
+        }
+
+        // Final decode to handle any remaining buffered data
+        result += decoder.decode();
+
+        const rawText = result;
         let jsonString = rawText;
 
         // Check if the response is wrapped in a markdown code block
