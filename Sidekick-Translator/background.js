@@ -124,23 +124,23 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
           const chunk = decoder.decode(value, { stream: true });
           buffer += chunk;
 
-          // Process complete JSON objects from the buffer
-          let newlineIndex;
-          while ((newlineIndex = buffer.indexOf('\n')) !== -1) {
-            const line = buffer.substring(0, newlineIndex).trim();
-            buffer = buffer.substring(newlineIndex + 1);
+          // Process complete JSON objects separated by comma and newline
+          let separatorIndex;
+          while ((separatorIndex = buffer.indexOf('},\n{')) !== -1) {
+            const jsonStr = buffer.substring(0, separatorIndex + 1).trim();
+            buffer = '{' + buffer.substring(separatorIndex + 3);
 
-            if (line === '') continue;
+            if (jsonStr === '') continue;
 
             try {
-              const parsedChunk = JSON.parse(line);
+              const parsedChunk = JSON.parse(jsonStr);
               if (parsedChunk.candidates && parsedChunk.candidates[0] && parsedChunk.candidates[0].content && parsedChunk.candidates[0].content.parts && parsedChunk.candidates[0].content.parts[0]) {
                 const newText = parsedChunk.candidates[0].content.parts[0].text;
                 accumulatedTextContent += newText;
                 chrome.tabs.sendMessage(tabId, { type: 'DISPLAY_STREAM_CHUNK', payload: { text: newText } });
               }
             } catch (e) {
-              console.warn('Could not parse stream line as JSON:', line, e);
+              console.warn('Could not parse stream JSON object:', jsonStr.substring(0, 100) + '...', e);
               // If parsing fails, it might be a partial JSON object, so we break and wait for more data
               break;
             }
@@ -149,15 +149,21 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 
         // After the stream is done, process any remaining data in the buffer
         if (buffer.trim() !== '') {
+          // Remove trailing comma if present
+          let finalBuffer = buffer.trim();
+          if (finalBuffer.endsWith(',')) {
+            finalBuffer = finalBuffer.slice(0, -1);
+          }
+          
           try {
-            const parsedChunk = JSON.parse(buffer);
+            const parsedChunk = JSON.parse(finalBuffer);
             if (parsedChunk.candidates && parsedChunk.candidates[0] && parsedChunk.candidates[0].content && parsedChunk.candidates[0].content.parts && parsedChunk.candidates[0].content.parts[0]) {
               const newText = parsedChunk.candidates[0].content.parts[0].text;
               accumulatedTextContent += newText;
               chrome.tabs.sendMessage(tabId, { type: 'DISPLAY_STREAM_CHUNK', payload: { text: newText } });
             }
           } catch (e) {
-            console.warn('Could not parse final stream buffer as JSON:', buffer, e);
+            console.warn('Could not parse final stream buffer as JSON:', finalBuffer.substring(0, 100) + '...', e);
           }
         }
 
