@@ -226,6 +226,10 @@ document.addEventListener('DOMContentLoaded', () => {
       loadingView.style.display = 'none';
       resultView.style.display = 'block';
       
+      // 캐시된 결과를 위해 currentSummary와 currentTranslation 업데이트
+      currentSummary = message.payload.summary;
+      currentTranslation = message.payload.translated_text;
+      
       // Export 버튼 표시 (번역 완료)
       document.getElementById('export-btn').style.display = 'inline-flex';
       
