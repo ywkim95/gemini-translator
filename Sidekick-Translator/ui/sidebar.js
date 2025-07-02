@@ -12,24 +12,46 @@ document.addEventListener('DOMContentLoaded', () => {
   let isStreaming = false;
   let streamingText = '';
   let streamingTimer = null;
+  let currentSummary = '';
+  let currentTranslation = '';
 
-  // Helper function to display streaming text with typewriter effect
+  // Helper function to extract and display streaming content
   function displayStreamingText(text) {
     streamingText += text;
     
-    // Clear any existing timer
-    if (streamingTimer) {
-      clearTimeout(streamingTimer);
+    // Try to extract summary and translated_text from the accumulated JSON-like text
+    try {
+      // Look for JSON structure in the accumulated text
+      const jsonMatch = streamingText.match(/```json\s*\n?([\s\S]*?)(?:\n?```|$)/);
+      if (jsonMatch) {
+        const jsonContent = jsonMatch[1];
+        
+        // Try to extract summary
+        const summaryMatch = jsonContent.match(/"summary":\s*"([^"]*(?:\\.[^"]*)*)"?/);
+        if (summaryMatch) {
+          currentSummary = summaryMatch[1].replace(/\\n/g, '\n').replace(/\\"/g, '"');
+        }
+        
+        // Try to extract translated_text
+        const translatedMatch = jsonContent.match(/"translated_text":\s*"([^"]*(?:\\.[^"]*)*)"?/);
+        if (translatedMatch) {
+          currentTranslation = translatedMatch[1].replace(/\\n/g, '\n').replace(/\\"/g, '"');
+        }
+      }
+    } catch (e) {
+      // If parsing fails, just continue - we'll show whatever we have
+      console.log('[sidebar.js] Could not parse streaming JSON:', e);
     }
     
-    // Update display immediately for responsiveness
-    summaryEl.innerHTML = streamingText;
-    translationEl.innerHTML = streamingText;
-    
-    // Add blinking cursor effect
-    const cursor = '<span class="streaming-cursor">|</span>';
-    summaryEl.innerHTML += cursor;
-    translationEl.innerHTML += cursor;
+    // Update display with extracted content or fallback to raw text
+    if (currentSummary || currentTranslation) {
+      summaryEl.innerHTML = currentSummary + '<span class="streaming-cursor">|</span>';
+      translationEl.innerHTML = currentTranslation + '<span class="streaming-cursor">|</span>';
+    } else {
+      // Fallback: show the raw streaming text in both areas
+      summaryEl.innerHTML = streamingText + '<span class="streaming-cursor">|</span>';
+      translationEl.innerHTML = streamingText + '<span class="streaming-cursor">|</span>';
+    }
     
     // Auto-scroll to bottom
     summaryEl.scrollTop = summaryEl.scrollHeight;
@@ -47,6 +69,8 @@ document.addEventListener('DOMContentLoaded', () => {
     // Reset streaming state
     isStreaming = false;
     streamingText = '';
+    currentSummary = '';
+    currentTranslation = '';
     if (streamingTimer) {
       clearTimeout(streamingTimer);
       streamingTimer = null;
@@ -75,6 +99,8 @@ document.addEventListener('DOMContentLoaded', () => {
       // Start streaming mode
       isStreaming = true;
       streamingText = '';
+      currentSummary = '';
+      currentTranslation = '';
       loadingView.style.display = 'none';
       resultView.style.display = 'block';
       summaryEl.innerHTML = '<span class="streaming-cursor">|</span>';
@@ -90,9 +116,9 @@ document.addEventListener('DOMContentLoaded', () => {
       // End streaming mode and remove cursor
       if (isStreaming) {
         isStreaming = false;
-        // Remove cursor from the display
-        summaryEl.innerHTML = streamingText;
-        translationEl.innerHTML = streamingText;
+        // Remove cursor from the display and show final extracted content
+        summaryEl.innerHTML = currentSummary || streamingText;
+        translationEl.innerHTML = currentTranslation || streamingText;
       }
       
     } else if (message.type === 'DISPLAY_RESULTS') {
@@ -114,6 +140,9 @@ document.addEventListener('DOMContentLoaded', () => {
       
     } else if (message.type === 'DISPLAY_ERROR') {
       isStreaming = false;
+      streamingText = '';
+      currentSummary = '';
+      currentTranslation = '';
       if (streamingTimer) {
         clearTimeout(streamingTimer);
         streamingTimer = null;
