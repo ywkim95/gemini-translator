@@ -1,5 +1,27 @@
 console.log('[background.js] Service worker loaded');
 
+// 툴바 아이콘 클릭 이벤트 처리
+chrome.action.onClicked.addListener(async (tab) => {
+  console.log('[background.js] Extension icon clicked for tab:', tab.id);
+  
+  try {
+    // content script 주입
+    await chrome.scripting.executeScript({
+      target: { tabId: tab.id },
+      files: ['scripts/readability.js']
+    });
+    
+    await chrome.scripting.executeScript({
+      target: { tabId: tab.id },
+      files: ['scripts/content_script.js']
+    });
+    
+    console.log('[background.js] Content scripts injected successfully');
+  } catch (error) {
+    console.error('[background.js] Error injecting content scripts:', error);
+  }
+});
+
 chrome.tabs.onRemoved.addListener((tabId) => {
   chrome.storage.local.get(null, (items) => {
     for (let key in items) {
