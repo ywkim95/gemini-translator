@@ -499,7 +499,7 @@ ${payload.translation}
         console.log('[background.js] File download started with ID:', downloadId);
         chrome.tabs.sendMessage(tabId, { 
           type: 'EXPORT_SUCCESS', 
-          message: `파일이 다운로드 폴더에 저장되었습니다!\n파일명: ${fileName}` 
+          message: `파일이 저장되었습니다! (${fileName})` 
         });
       }
     });

@@ -15,6 +15,35 @@ document.addEventListener('DOMContentLoaded', () => {
   let currentSummary = '';
   let currentTranslation = '';
 
+  // Toast 메시지 표시 함수
+  function showToast(message, type = 'success') {
+    const toastContainer = document.getElementById('toast-container');
+    const toastMessage = document.getElementById('toast-message');
+    const toastIcon = document.getElementById('toast-icon');
+    const toastText = document.getElementById('toast-text');
+    
+    // 아이콘 설정
+    if (type === 'success') {
+      toastIcon.textContent = '✅';
+      toastMessage.className = 'success';
+    } else if (type === 'error') {
+      toastIcon.textContent = '❌';
+      toastMessage.className = 'error';
+    }
+    
+    toastText.textContent = message;
+    toastContainer.style.display = 'block';
+    
+    // 3초 후 자동으로 사라짐
+    setTimeout(() => {
+      toastMessage.style.animation = 'toast-fade-out 0.3s ease-out';
+      setTimeout(() => {
+        toastContainer.style.display = 'none';
+        toastMessage.style.animation = 'toast-slide-up 0.3s ease-out';
+      }, 300);
+    }, 3000);
+  }
+
   // Helper function to extract and display streaming content
   function displayStreamingText(text) {
     streamingText += text;
@@ -147,7 +176,7 @@ document.addEventListener('DOMContentLoaded', () => {
   // Export 버튼
   document.getElementById('export-btn').addEventListener('click', () => {
     if (!currentSummary && !currentTranslation) {
-      alert('저장할 내용이 없습니다. 먼저 페이지를 분석해주세요.');
+      showToast('저장할 내용이 없습니다. 먼저 페이지를 분석해주세요.', 'error');
       return;
     }
 
@@ -257,10 +286,10 @@ document.addEventListener('DOMContentLoaded', () => {
       errorMessage.textContent = message.error || (message.payload && message.payload.message) || 'Unknown error occurred';
       
     } else if (message.type === 'EXPORT_SUCCESS') {
-      alert(message.message);
+      showToast(message.message, 'success');
       
     } else if (message.type === 'EXPORT_ERROR') {
-      alert('Export 오류: ' + message.error);
+      showToast('Export 오류: ' + message.error, 'error');
     }
   });
 });
