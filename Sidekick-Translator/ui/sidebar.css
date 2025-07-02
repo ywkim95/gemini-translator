@@ -150,3 +150,20 @@ body {
   color: #d93025; /* Red */
   font-weight: 500;
 }
+
+/* Analyze Button */
+.analyze-btn {
+  background-color: #0050d7; /* Blue */
+  color: white;
+  border: none;
+  padding: 8px 15px;
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 14px;
+  font-weight: 500;
+  transition: background-color 0.2s ease;
+}
+
+.analyze-btn:hover {
+  background-color: #003d9e;
+}

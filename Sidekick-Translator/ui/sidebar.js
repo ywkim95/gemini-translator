@@ -1,6 +1,5 @@
 document.addEventListener('DOMContentLoaded', () => {
   const analyzeBtn = document.getElementById('analyze-btn');
-  const initialView = document.getElementById('st-initial-state');
   const loadingView = document.getElementById('st-loading-state');
   const resultView = document.getElementById('st-result-state');
   const errorView = document.getElementById('st-error-state');
@@ -11,7 +10,6 @@ document.addEventListener('DOMContentLoaded', () => {
 
   // 분석 시작 버튼 이벤트
   analyzeBtn.addEventListener('click', () => {
-    initialView.style.display = 'none';
     resultView.style.display = 'none';
     errorView.style.display = 'none';
     loadingView.style.display = 'block';
