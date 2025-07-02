@@ -115,12 +115,14 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         const reader = response.body.getReader();
         const decoder = new TextDecoder();
         let accumulatedTextContent = ''; // This will accumulate the actual text from parts[0].text
+        let fullStreamResponse = ''; // This will accumulate the raw stream data
         let done = false;
 
         while (!done) {
           const { value, done: readerDone } = await reader.read();
           done = readerDone;
           const chunk = decoder.decode(value, { stream: true });
+          fullStreamResponse += chunk; // Accumulate the raw stream data
 
           // Each chunk might contain multiple JSON objects (GenerateContentResponse)
           // Split by newline to handle multiple JSON objects in one chunk
@@ -141,7 +143,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
           }
         }
 
-        const rawText = accumulatedTextContent; // Now rawText is the actual model-generated text
+        const rawText = fullStreamResponse; // Now rawText is the full stream response for final JSON parsing
         let jsonString = rawText;
 
         // Check if the response is wrapped in a markdown code block
