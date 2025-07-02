@@ -17,8 +17,21 @@ chrome.action.onClicked.addListener(async (tab) => {
     });
     
     console.log('[background.js] Content scripts injected successfully');
+    
+    // 사이드바 토글 메시지 전송
+    await chrome.tabs.sendMessage(tab.id, { type: 'TOGGLE_SIDEBAR' });
+    console.log('[background.js] Sidebar toggle message sent');
+    
   } catch (error) {
-    console.error('[background.js] Error injecting content scripts:', error);
+    console.error('[background.js] Error:', error);
+    
+    // content script가 이미 주입되어 있는 경우, 바로 사이드바 토글 시도
+    try {
+      await chrome.tabs.sendMessage(tab.id, { type: 'TOGGLE_SIDEBAR' });
+      console.log('[background.js] Sidebar toggle message sent (fallback)');
+    } catch (fallbackError) {
+      console.error('[background.js] Fallback error:', fallbackError);
+    }
   }
 });
 
