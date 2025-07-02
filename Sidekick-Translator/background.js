@@ -143,7 +143,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
           }
         }
 
-        const rawText = fullStreamResponse; // Now rawText is the full stream response for final JSON parsing
+        const rawText = accumulatedTextContent; // Now rawText is the actual model-generated text, which should be the final JSON
         let jsonString = rawText;
 
         // Check if the response is wrapped in a markdown code block
