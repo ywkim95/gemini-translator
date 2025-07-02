@@ -381,30 +381,26 @@ async function handleFileExport(payload, tabId) {
   console.log('[background.js] Handling file export request');
   
   try {
-    // 저장된 export 경로 가져오기
+    // 저장된 export 경로 가져오기 (참고용)
     const settings = await chrome.storage.sync.get(['exportPath']);
     const exportPath = settings.exportPath;
-    
-    if (!exportPath) {
-      chrome.tabs.sendMessage(tabId, { 
-        type: 'EXPORT_ERROR', 
-        error: 'Export 경로가 설정되지 않았습니다. 확장 프로그램 옵션에서 경로를 설정해주세요.' 
-      });
-      return;
-    }
 
     // 파일명 생성 (현재 날짜와 시간 포함)
     const now = new Date();
     const dateStr = now.toISOString().slice(0, 10); // YYYY-MM-DD
     const timeStr = now.toTimeString().slice(0, 8).replace(/:/g, '-'); // HH-MM-SS
-    const safeTitle = payload.title.replace(/[^a-zA-Z0-9가-힣\s]/g, '').slice(0, 50);
-    const fileName = `${dateStr}_${timeStr}_${safeTitle}.md`;
+    const safeTitle = payload.title
+      .replace(/[^a-zA-Z0-9가-힣\s\-_]/g, '') // 안전한 문자만 허용
+      .replace(/\s+/g, '_') // 공백을 언더스코어로 변경
+      .slice(0, 30); // 길이 제한
+    const fileName = `sidekick_${dateStr}_${timeStr}_${safeTitle || 'translation'}.md`;
 
     // 마크다운 콘텐츠 생성
     const markdownContent = `# ${payload.title}
 
 **URL:** ${payload.url}  
-**번역 일시:** ${now.toLocaleString('ko-KR')}
+**번역 일시:** ${now.toLocaleString('ko-KR')}  
+**저장 위치:** 브라우저 기본 다운로드 폴더${exportPath ? ` (설정된 경로: ${exportPath})` : ''}
 
 ---
 
@@ -430,7 +426,7 @@ ${payload.translation}
     chrome.downloads.download({
       url: dataUrl,
       filename: fileName,
-      saveAs: true // 사용자가 저장 위치를 선택할 수 있게 함
+      conflictAction: 'uniquify' // 파일명 중복 시 자동으로 번호 추가
     }, (downloadId) => {
       if (chrome.runtime.lastError) {
         console.error('[background.js] Download error:', chrome.runtime.lastError);
@@ -442,7 +438,7 @@ ${payload.translation}
         console.log('[background.js] File download started with ID:', downloadId);
         chrome.tabs.sendMessage(tabId, { 
           type: 'EXPORT_SUCCESS', 
-          message: '파일이 성공적으로 저장되었습니다!' 
+          message: `파일이 다운로드 폴더에 저장되었습니다!\n파일명: ${fileName}` 
         });
       }
     });
