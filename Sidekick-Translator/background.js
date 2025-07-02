@@ -114,19 +114,31 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 
         const reader = response.body.getReader();
         const decoder = new TextDecoder();
-        let result = '';
+        let accumulatedTextContent = ''; // This will accumulate the actual text from parts[0].text
         let done = false;
 
         while (!done) {
           const { value, done: readerDone } = await reader.read();
           done = readerDone;
-          result += decoder.decode(value, { stream: true });
+          const chunk = decoder.decode(value, { stream: true });
+
+          // Each chunk might contain multiple JSON objects (GenerateContentResponse)
+          // Split by newline to handle multiple JSON objects in one chunk
+          const lines = chunk.split('\n');
+          for (const line of lines) {
+            if (line.trim() === '') continue;
+            try {
+              const parsedChunk = JSON.parse(line);
+              if (parsedChunk.candidates && parsedChunk.candidates[0] && parsedChunk.candidates[0].content && parsedChunk.candidates[0].content.parts && parsedChunk.candidates[0].content.parts[0]) {
+                accumulatedTextContent += parsedChunk.candidates[0].content.parts[0].text;
+              }
+            } catch (e) {
+              console.warn('Could not parse stream chunk as JSON (might be partial or non-JSON data):', line, e);
+            }
+          }
         }
 
-        // Final decode to handle any remaining buffered data
-        result += decoder.decode();
-
-        const rawText = result;
+        const rawText = accumulatedTextContent; // Now rawText is the actual model-generated text
         let jsonString = rawText;
 
         // Check if the response is wrapped in a markdown code block
