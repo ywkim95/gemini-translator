@@ -117,12 +117,13 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         }
 
         const rawText = data.candidates[0].content.parts[0].text;
-        const jsonMatch = rawText.match(/{[\s\S]*}/);
-        if (!jsonMatch) {
+        const jsonStartIndex = rawText.indexOf('{');
+        const jsonEndIndex = rawText.lastIndexOf('}');
+        if (jsonStartIndex === -1 || jsonEndIndex === -1 || jsonEndIndex < jsonStartIndex) {
           throw new Error('API 응답에서 유효한 JSON 객체를 찾을 수 없습니다.');
         }
-
-        const geminiResponse = JSON.parse(jsonMatch[0]);
+        const jsonString = rawText.substring(jsonStartIndex, jsonEndIndex + 1);
+        const geminiResponse = JSON.parse(jsonString);
 
         await chrome.storage.local.set({ [cacheKey]: geminiResponse });
         console.log('[background.js] Cached result for:', cacheKey);
