@@ -19,38 +19,87 @@ document.addEventListener('DOMContentLoaded', () => {
   function displayStreamingText(text) {
     streamingText += text;
     
-    // Try to extract summary and translated_text from the accumulated JSON-like text
+    // Try to extract summary and translated_text from the accumulated text
     try {
-      // Look for JSON structure in the accumulated text
+      // More aggressive parsing - look for partial content too
+      let updatedSummary = false;
+      let updatedTranslation = false;
+      
+      // Look for JSON structure (with or without markdown code blocks)
+      let contentToSearch = streamingText;
       const jsonMatch = streamingText.match(/```json\s*\n?([\s\S]*?)(?:\n?```|$)/);
       if (jsonMatch) {
-        const jsonContent = jsonMatch[1];
-        
-        // Try to extract summary
-        const summaryMatch = jsonContent.match(/"summary":\s*"([^"]*(?:\\.[^"]*)*)"?/);
-        if (summaryMatch) {
-          currentSummary = summaryMatch[1].replace(/\\n/g, '\n').replace(/\\"/g, '"');
-        }
-        
-        // Try to extract translated_text
-        const translatedMatch = jsonContent.match(/"translated_text":\s*"([^"]*(?:\\.[^"]*)*)"?/);
-        if (translatedMatch) {
-          currentTranslation = translatedMatch[1].replace(/\\n/g, '\n').replace(/\\"/g, '"');
+        contentToSearch = jsonMatch[1];
+      }
+      
+      // Try to extract summary with more flexible pattern
+      const summaryMatch = contentToSearch.match(/"summary":\s*"([^]*?)(?=",?\s*"translated_text"|",?\s*}|$)/);
+      if (summaryMatch) {
+        const newSummary = summaryMatch[1].replace(/\\n/g, '\n').replace(/\\"/g, '"').replace(/\\$/, '');
+        if (newSummary !== currentSummary && newSummary.length > currentSummary.length) {
+          currentSummary = newSummary;
+          updatedSummary = true;
         }
       }
+      
+      // Try to extract translated_text with more flexible pattern
+      const translatedMatch = contentToSearch.match(/"translated_text":\s*"([^]*?)(?="\s*}|$)/);
+      if (translatedMatch) {
+        const newTranslation = translatedMatch[1].replace(/\\n/g, '\n').replace(/\\"/g, '"').replace(/\\$/, '');
+        if (newTranslation !== currentTranslation && newTranslation.length > currentTranslation.length) {
+          currentTranslation = newTranslation;
+          updatedTranslation = true;
+        }
+      }
+      
+      // Also try to extract content even if it's incomplete - more aggressive approach
+      const partialSummaryMatch = contentToSearch.match(/"summary":\s*"([^]*?)(?="|$)/);
+      if (partialSummaryMatch && partialSummaryMatch[1].length > currentSummary.length) {
+        currentSummary = partialSummaryMatch[1].replace(/\\n/g, '\n').replace(/\\"/g, '"');
+        updatedSummary = true;
+      }
+      
+      const partialTranslatedMatch = contentToSearch.match(/"translated_text":\s*"([^]*?)(?="|$)/);
+      if (partialTranslatedMatch && partialTranslatedMatch[1].length > currentTranslation.length) {
+        currentTranslation = partialTranslatedMatch[1].replace(/\\n/g, '\n').replace(/\\"/g, '"');
+        updatedTranslation = true;
+      }
+      
+      // Even more aggressive - look for any meaningful text content
+      if (!currentSummary && !currentTranslation) {
+        // If we see any structured text, show it immediately
+        const anyTextMatch = streamingText.match(/[가-힣\w\s]+/);
+        if (anyTextMatch) {
+          currentSummary = anyTextMatch[0];
+          updatedSummary = true;
+        }
+      }
+      
+      console.log('[sidebar.js] Current summary length:', currentSummary.length, 'Translation length:', currentTranslation.length);
+      
     } catch (e) {
       // If parsing fails, just continue - we'll show whatever we have
       console.log('[sidebar.js] Could not parse streaming JSON:', e);
     }
     
-    // Update display with extracted content or fallback to raw text
+    // Update display immediately - always show something
     if (currentSummary || currentTranslation) {
-      summaryEl.innerHTML = currentSummary + '<span class="streaming-cursor">|</span>';
-      translationEl.innerHTML = currentTranslation + '<span class="streaming-cursor">|</span>';
+      if (currentSummary) {
+        summaryEl.innerHTML = currentSummary + '<span class="streaming-cursor">|</span>';
+      }
+      if (currentTranslation) {
+        translationEl.innerHTML = currentTranslation + '<span class="streaming-cursor">|</span>';
+      }
+      if (!currentSummary) {
+        summaryEl.innerHTML = 'Loading summary...<span class="streaming-cursor">|</span>';
+      }
+      if (!currentTranslation) {
+        translationEl.innerHTML = 'Loading translation...<span class="streaming-cursor">|</span>';
+      }
     } else {
-      // Fallback: show the raw streaming text in both areas
-      summaryEl.innerHTML = streamingText + '<span class="streaming-cursor">|</span>';
-      translationEl.innerHTML = streamingText + '<span class="streaming-cursor">|</span>';
+      // Show that we're processing
+      summaryEl.innerHTML = 'Processing...<span class="streaming-cursor">|</span>';
+      translationEl.innerHTML = 'Processing...<span class="streaming-cursor">|</span>';
     }
     
     // Auto-scroll to bottom

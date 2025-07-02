@@ -133,33 +133,69 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 
           console.log(`[background.js] Chunk ${chunkCount}: ${chunk.substring(0, 100)}...`);
           console.log(`[background.js] Current buffer length: ${buffer.length}`);
+          
+          // Try to parse and send chunks in real-time
+          try {
+            // Look for complete JSON objects in the current buffer
+            const lines = buffer.split('\n').filter(line => line.trim());
+            
+            for (const line of lines) {
+              if (line.startsWith('{') && line.endsWith('}')) {
+                try {
+                  const responseObj = JSON.parse(line);
+                  
+                  if (responseObj.candidates && responseObj.candidates[0] && 
+                      responseObj.candidates[0].content && responseObj.candidates[0].content.parts && 
+                      responseObj.candidates[0].content.parts[0]) {
+                    
+                    const newText = responseObj.candidates[0].content.parts[0].text;
+                    accumulatedTextContent += newText;
+                    console.log('[background.js] Real-time text chunk:', newText.substring(0, 50) + '...');
+                    
+                    // Send streaming chunk to UI immediately
+                    chrome.tabs.sendMessage(tabId, { 
+                      type: 'DISPLAY_STREAM_CHUNK', 
+                      payload: { text: newText } 
+                    });
+                    
+                    // Very small delay for smoother effect
+                    await new Promise(resolve => setTimeout(resolve, 10));
+                  }
+                } catch (parseError) {
+                  // Skip invalid JSON lines
+                  continue;
+                }
+              }
+            }
+          } catch (e) {
+            // Continue if real-time parsing fails
+            console.log('[background.js] Real-time parsing failed, continuing...');
+          }
         }
 
-        console.log('[background.js] Stream complete. Processing full response...');
+        console.log('[background.js] Stream complete. Processing any remaining content...');
 
-        // Parse the entire response as JSON array
+        // Parse the entire response as JSON array for any missed content
         try {
           const responseArray = JSON.parse(buffer);
           console.log('[background.js] Successfully parsed response array, length:', responseArray.length);
           
-          // Extract text from each response object and accumulate
+          // Extract text from each response object and accumulate any missed content
+          let finalAccumulated = '';
           for (const responseObj of responseArray) {
-            console.log('[background.js] Processing response object:', responseObj);
-            
             if (responseObj.candidates && responseObj.candidates[0] && responseObj.candidates[0].content && responseObj.candidates[0].content.parts && responseObj.candidates[0].content.parts[0]) {
-              const newText = responseObj.candidates[0].content.parts[0].text;
-              accumulatedTextContent += newText;
-              console.log('[background.js] Added text chunk:', newText.substring(0, 50) + '...');
-              
-              // Send streaming chunk to UI
-              chrome.tabs.sendMessage(tabId, { 
-                type: 'DISPLAY_STREAM_CHUNK', 
-                payload: { text: newText } 
-              });
-              
-              // Add small delay for better streaming effect
-              await new Promise(resolve => setTimeout(resolve, 50));
+              finalAccumulated += responseObj.candidates[0].content.parts[0].text;
             }
+          }
+          
+          // If we missed any content during real-time processing, send it now
+          if (finalAccumulated.length > accumulatedTextContent.length) {
+            const missedContent = finalAccumulated.substring(accumulatedTextContent.length);
+            accumulatedTextContent = finalAccumulated;
+            chrome.tabs.sendMessage(tabId, { 
+              type: 'DISPLAY_STREAM_CHUNK', 
+              payload: { text: missedContent } 
+            });
           }
         } catch (parseError) {
           console.error('[background.js] Failed to parse response array:', parseError);
