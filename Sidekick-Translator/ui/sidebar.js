@@ -161,6 +161,22 @@ document.addEventListener('DOMContentLoaded', () => {
         displayStreamingText(message.payload.text);
       }
       
+    } else if (message.type === 'CHUNK_PROGRESS') {
+      // 청크 처리 진행 상황 표시
+      const { current, total, text } = message.payload;
+      summaryEl.innerHTML = `Processing chunk ${current}/${total}...<span class="streaming-cursor">|</span>`;
+      
+      // 번역된 텍스트를 누적하여 표시
+      if (text) {
+        if (!currentTranslation) {
+          currentTranslation = text;
+        } else {
+          currentTranslation += '\n\n' + text;
+        }
+        translationEl.innerHTML = currentTranslation + '<span class="streaming-cursor">|</span>';
+        translationEl.scrollTop = translationEl.scrollHeight;
+      }
+      
     } else if (message.type === 'STREAMING_END') {
       // End streaming mode and remove cursor
       if (isStreaming) {
@@ -187,7 +203,7 @@ document.addEventListener('DOMContentLoaded', () => {
         translationEl.innerHTML = converter.makeHtml(message.payload.translated_text);
       }, 500);
       
-    } else if (message.type === 'DISPLAY_ERROR') {
+    } else if (message.type === 'DISPLAY_ERROR' || message.type === 'ANALYSIS_ERROR') {
       isStreaming = false;
       streamingText = '';
       currentSummary = '';
@@ -199,7 +215,7 @@ document.addEventListener('DOMContentLoaded', () => {
       
       loadingView.style.display = 'none';
       errorView.style.display = 'block';
-      errorMessage.textContent = message.payload.message;
+      errorMessage.textContent = message.error || (message.payload && message.payload.message) || 'Unknown error occurred';
     }
   });
 });
