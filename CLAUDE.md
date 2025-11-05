@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-This is a Chrome extension called "Sidekick Translator" that uses Google Gemini 1.5 Flash API to summarize and translate web pages into Korean. The extension provides a sidebar interface that displays both a summary and full translation of the current page content.
+This is a Chrome extension called "Sidekick Translator" that uses Google Gemini 2.0 Flash API to summarize and translate web pages into Korean. The extension provides a sidebar interface that displays both a summary and full translation of the current page content.
 
 ## Development Commands
 
@@ -41,9 +41,10 @@ This is a Chrome extension called "Sidekick Translator" that uses Google Gemini 
 - `chrome.storage.local`: Response caching and sidebar state
 
 ### API Integration
-- Gemini 1.5 Flash API with streaming responses
-- Custom prompt template in `background.js` (lines 74-94)
+- Gemini 2.0 Flash (Experimental) API with streaming responses
+- Custom prompt template in `background.js`
 - JSON response format with summary and translated_text fields
+- Supports multiple AI providers: Gemini, OpenAI, Claude, Grok
 
 ## File Structure
 - `Sidekick-Translator/`: Main extension directory

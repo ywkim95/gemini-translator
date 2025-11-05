@@ -2,7 +2,7 @@
   "manifest_version": 3,
   "name": "Sidekick Translator",
   "version": "1.0",
-  "description": "현재 페이지를 Gemini로 요약 및 번역합니다.",
+  "description": "현재 페이지를 Gemini 2.0 Flash로 요약 및 번역합니다.",
   "permissions": ["activeTab", "scripting", "storage", "downloads"],
   "host_permissions": ["<all_urls>"],
   "action": {
