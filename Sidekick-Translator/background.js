@@ -6,18 +6,17 @@ const CHUNK_BOUNDARY_THRESHOLD = 0.8;
 const STREAMING_DELAY_MS = 10;
 const RATE_LIMIT_ERROR_MESSAGE = `🚫 API 사용량 제한에 도달했습니다
 
-Gemini API의 무료 할당량을 모두 사용했습니다.
+API의 무료 할당량을 모두 사용했습니다.
 • 일일 할당량이 재설정될 때까지 기다려주세요
-• 또는 Google AI Studio에서 유료 플랜을 확인해보세요
-
-자세한 정보: https://ai.google.dev/gemini-api/docs/rate-limits`;
+• 또는 유료 플랜을 확인해보세요`;
 
 // Helper function to handle API rate limit errors
 function handleApiError(response, errorData) {
   if (response.status === 429) {
     throw new Error(RATE_LIMIT_ERROR_MESSAGE);
   }
-  throw new Error(`API Error: ${response.status} ${response.statusText} - ${errorData.error.message}`);
+  const errorMessage = errorData?.error?.message || errorData?.message || JSON.stringify(errorData);
+  throw new Error(`API Error: ${response.status} ${response.statusText} - ${errorMessage}`);
 }
 
 // 툴바 아이콘 클릭 이벤트 처리
@@ -90,9 +89,20 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
           return;
         }
 
-        const { geminiApiKey } = await chrome.storage.sync.get('geminiApiKey');
-        if (!geminiApiKey) {
-          throw new Error('Gemini API 키가 설정되지 않았습니다. 확장 프로그램 옵션에서 설정해주세요.');
+        // API 제공자 및 키 가져오기
+        const settings = await chrome.storage.sync.get(['apiProvider', 'geminiApiKey', 'openaiApiKey', 'claudeApiKey', 'grokApiKey']);
+        const provider = settings.apiProvider || 'gemini';
+
+        const apiKeyMap = {
+          gemini: settings.geminiApiKey,
+          openai: settings.openaiApiKey,
+          claude: settings.claudeApiKey,
+          grok: settings.grokApiKey
+        };
+
+        const apiKey = apiKeyMap[provider];
+        if (!apiKey) {
+          throw new Error(`${provider.toUpperCase()} API 키가 설정되지 않았습니다. 확장 프로그램 옵션에서 설정해주세요.`);
         }
 
         // 텍스트 청킹 로직 - CHUNK_SIZE 단위로 분할
@@ -123,11 +133,11 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         }
         
         console.log(`[background.js] Split into ${textChunks.length} chunks`);
-        
+
         if (textChunks.length === 1) {
-          await processSingleChunk(textChunks[0], tabId, geminiApiKey, cacheKey);
+          await processSingleChunk(textChunks[0], tabId, apiKey, provider, cacheKey);
         } else {
-          await processMultipleChunks(textChunks, tabId, geminiApiKey, cacheKey);
+          await processMultipleChunks(textChunks, tabId, apiKey, provider, cacheKey);
         }
 
       } catch (error) {
@@ -142,7 +152,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 });
 
 // 단일 청크 처리 함수
-async function processSingleChunk(text, tabId, geminiApiKey, cacheKey) {
+async function processSingleChunk(text, tabId, apiKey, provider, cacheKey) {
   const masterPrompt = `# 페르소나 (Persona)
 당신은 고도로 숙련된 정보 분석가이자 전문 번역가입니다. 당신의 임무는 사용자가 제공한 영문 텍스트의 핵심을 빠르고 정확하게 파악하여 명료한 한국어 요약문을 생성하고, 원문의 뉘앙스를 최대한 살리면서 자연스러운 한국어로 전체를 번역하는 것입니다.
 
@@ -165,85 +175,20 @@ async function processSingleChunk(text, tabId, geminiApiKey, cacheKey) {
 
 ${text}`;
 
-  const requestBody = {
-    contents: [{
-      parts: [{ text: masterPrompt }]
-    }]
-  };
-
-  const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:streamGenerateContent?key=${geminiApiKey}`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(requestBody),
-  });
-
-  if (!response.ok) {
-    const errorData = await response.json();
-    handleApiError(response, errorData);
-  }
-
-  const reader = response.body.getReader();
-  const decoder = new TextDecoder();
-  let accumulatedTextContent = '';
-  let buffer = '';
-  let done = false;
-  let chunkCount = 0;
-
   console.log('[background.js] Starting stream processing...');
   chrome.tabs.sendMessage(tabId, { type: 'STREAMING_START' });
 
-  while (!done) {
-    const { value, done: readerDone } = await reader.read();
-    done = readerDone;
-    const chunk = decoder.decode(value, { stream: true });
-    buffer += chunk;
-    chunkCount++;
-
-    console.log(`[background.js] Chunk ${chunkCount}: ${chunk.substring(0, 100)}...`);
-    
-    try {
-      const lines = buffer.split('\n').filter(line => line.trim());
-      
-      for (const line of lines) {
-        if (line.startsWith('{') && line.endsWith('}')) {
-          try {
-            const responseObj = JSON.parse(line);
-            
-            if (responseObj.candidates && responseObj.candidates[0] && 
-                responseObj.candidates[0].content && responseObj.candidates[0].content.parts && 
-                responseObj.candidates[0].content.parts[0]) {
-              
-              const newText = responseObj.candidates[0].content.parts[0].text;
-              accumulatedTextContent += newText;
-              
-              chrome.tabs.sendMessage(tabId, {
-                type: 'DISPLAY_STREAM_CHUNK',
-                payload: { text: newText }
-              });
-
-              await new Promise(resolve => setTimeout(resolve, STREAMING_DELAY_MS));
-            }
-          } catch (parseError) {
-            continue;
-          }
-        }
-      }
-    } catch (e) {
-      console.log('[background.js] Real-time parsing failed, continuing...');
-    }
-  }
-
-  console.log('[background.js] Stream complete. Processing final result...');
-
-  // 최종 결과 파싱
   let result;
-  try {
-    const jsonMatch = accumulatedTextContent.match(/```json\s*\n?([\s\S]*?)(?:\n?```|$)/);
-    const jsonContent = jsonMatch ? jsonMatch[1] : accumulatedTextContent;
-    result = JSON.parse(jsonContent);
-  } catch (jsonError) {
-    console.error('[background.js] JSON parsing error:', jsonError);
-    throw new Error(`응답 처리 오류: ${jsonError.message}`);
+
+  // API 제공자에 따라 다른 처리
+  if (provider === 'gemini') {
+    result = await processGeminiSingleChunk(masterPrompt, apiKey, tabId);
+  } else if (provider === 'openai') {
+    result = await processOpenAISingleChunk(masterPrompt, apiKey, tabId);
+  } else if (provider === 'claude') {
+    result = await processClaudeSingleChunk(masterPrompt, apiKey, tabId);
+  } else if (provider === 'grok') {
+    result = await processGrokSingleChunk(masterPrompt, apiKey, tabId);
   }
 
   chrome.tabs.sendMessage(tabId, { type: 'STREAMING_END' });
@@ -252,7 +197,7 @@ ${text}`;
 }
 
 // 여러 청크 처리 함수
-async function processMultipleChunks(textChunks, tabId, geminiApiKey, cacheKey) {
+async function processMultipleChunks(textChunks, tabId, apiKey, provider, cacheKey) {
   console.log(`[background.js] Processing ${textChunks.length} chunks`);
   
   const chunkPrompt = (chunkIndex, totalChunks, chunkText) => `# 페르소나 (Persona)
@@ -283,7 +228,7 @@ ${chunkText}`;
     const prompt = chunkPrompt(i, textChunks.length, textChunks[i]);
     
     try {
-      const chunkResult = await processChunkWithAPI(prompt, geminiApiKey, tabId, i);
+      const chunkResult = await processChunkWithAPI(prompt, apiKey, provider, tabId, i);
       chunkResults.push(chunkResult);
       
       chrome.tabs.sendMessage(tabId, { 
@@ -324,7 +269,7 @@ ${chunkText}`;
 
 ${fullTranslatedText}`;
 
-    const summaryResult = await processChunkWithAPI(summaryPrompt, geminiApiKey, tabId, -1);
+    const summaryResult = await processChunkWithAPI(summaryPrompt, apiKey, provider, tabId, -1);
     
     const combinedResult = {
       summary: summaryResult.summary || summaryResult.translated_text || `이 문서는 ${textChunks.length}개 섹션으로 나뉘어 번역되었습니다.`,
@@ -351,31 +296,97 @@ ${fullTranslatedText}`;
 }
 
 // 개별 청크 API 호출 함수
-async function processChunkWithAPI(prompt, geminiApiKey, tabId, chunkIndex) {
-  const requestBody = {
-    contents: [{
-      parts: [{ text: prompt }]
-    }]
-  };
+async function processChunkWithAPI(prompt, apiKey, provider, tabId, chunkIndex) {
+  let textContent;
 
-  const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${geminiApiKey}`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(requestBody),
-  });
+  // API 제공자에 따라 다른 처리
+  if (provider === 'gemini') {
+    const requestBody = {
+      contents: [{
+        parts: [{ text: prompt }]
+      }]
+    };
 
-  if (!response.ok) {
-    const errorData = await response.json();
-    handleApiError(response, errorData);
+    const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${apiKey}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(requestBody),
+    });
+
+    if (!response.ok) {
+      const errorData = await response.json();
+      handleApiError(response, errorData);
+    }
+
+    const data = await response.json();
+
+    if (!data.candidates || !data.candidates[0] || !data.candidates[0].content) {
+      throw new Error('Invalid API response structure');
+    }
+
+    textContent = data.candidates[0].content.parts[0].text;
+  } else if (provider === 'openai' || provider === 'grok') {
+    const endpoint = provider === 'openai'
+      ? 'https://api.openai.com/v1/chat/completions'
+      : 'https://api.x.ai/v1/chat/completions';
+
+    const requestBody = {
+      model: provider === 'openai' ? 'gpt-4o-mini' : 'grok-beta',
+      messages: [{ role: 'user', content: prompt }],
+      temperature: 0.7
+    };
+
+    const response = await fetch(endpoint, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${apiKey}`
+      },
+      body: JSON.stringify(requestBody),
+    });
+
+    if (!response.ok) {
+      const errorData = await response.json();
+      handleApiError(response, errorData);
+    }
+
+    const data = await response.json();
+
+    if (!data.choices || !data.choices[0] || !data.choices[0].message) {
+      throw new Error('Invalid API response structure');
+    }
+
+    textContent = data.choices[0].message.content;
+  } else if (provider === 'claude') {
+    const requestBody = {
+      model: 'claude-3-5-sonnet-20241022',
+      max_tokens: 8192,
+      messages: [{ role: 'user', content: prompt }]
+    };
+
+    const response = await fetch('https://api.anthropic.com/v1/messages', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'x-api-key': apiKey,
+        'anthropic-version': '2023-06-01'
+      },
+      body: JSON.stringify(requestBody),
+    });
+
+    if (!response.ok) {
+      const errorData = await response.json();
+      handleApiError(response, errorData);
+    }
+
+    const data = await response.json();
+
+    if (!data.content || !data.content[0] || !data.content[0].text) {
+      throw new Error('Invalid API response structure');
+    }
+
+    textContent = data.content[0].text;
   }
-
-  const data = await response.json();
-  
-  if (!data.candidates || !data.candidates[0] || !data.candidates[0].content) {
-    throw new Error('Invalid API response structure');
-  }
-
-  const textContent = data.candidates[0].content.parts[0].text;
   
   try {
     const jsonMatch = textContent.match(/```json\s*\n?([\s\S]*?)(?:\n?```|$)/);
@@ -513,9 +524,275 @@ ${payload.translation}
 
   } catch (error) {
     console.error('[background.js] Export error:', error);
-    chrome.tabs.sendMessage(tabId, { 
-      type: 'EXPORT_ERROR', 
-      error: 'Export 처리 중 오류가 발생했습니다: ' + error.message 
+    chrome.tabs.sendMessage(tabId, {
+      type: 'EXPORT_ERROR',
+      error: 'Export 처리 중 오류가 발생했습니다: ' + error.message
     });
   }
+}
+
+// ===== API 제공자별 스트리밍 처리 함수 =====
+
+// Gemini 스트리밍 처리
+async function processGeminiSingleChunk(prompt, apiKey, tabId) {
+  const requestBody = {
+    contents: [{
+      parts: [{ text: prompt }]
+    }]
+  };
+
+  const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:streamGenerateContent?key=${apiKey}`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(requestBody),
+  });
+
+  if (!response.ok) {
+    const errorData = await response.json();
+    handleApiError(response, errorData);
+  }
+
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let accumulatedTextContent = '';
+  let buffer = '';
+  let done = false;
+
+  while (!done) {
+    const { value, done: readerDone } = await reader.read();
+    done = readerDone;
+    const chunk = decoder.decode(value, { stream: true });
+    buffer += chunk;
+
+    try {
+      const lines = buffer.split('\n').filter(line => line.trim());
+
+      for (const line of lines) {
+        if (line.startsWith('{') && line.endsWith('}')) {
+          try {
+            const responseObj = JSON.parse(line);
+
+            if (responseObj.candidates && responseObj.candidates[0] &&
+                responseObj.candidates[0].content && responseObj.candidates[0].content.parts &&
+                responseObj.candidates[0].content.parts[0]) {
+
+              const newText = responseObj.candidates[0].content.parts[0].text;
+              accumulatedTextContent += newText;
+
+              chrome.tabs.sendMessage(tabId, {
+                type: 'DISPLAY_STREAM_CHUNK',
+                payload: { text: newText }
+              });
+
+              await new Promise(resolve => setTimeout(resolve, STREAMING_DELAY_MS));
+            }
+          } catch (parseError) {
+            continue;
+          }
+        }
+      }
+    } catch (e) {
+      console.log('[background.js] Real-time parsing failed, continuing...');
+    }
+  }
+
+  // 최종 결과 파싱
+  const jsonMatch = accumulatedTextContent.match(/```json\s*\n?([\s\S]*?)(?:\n?```|$)/);
+  const jsonContent = jsonMatch ? jsonMatch[1] : accumulatedTextContent;
+  return JSON.parse(jsonContent);
+}
+
+// OpenAI 스트리밍 처리
+async function processOpenAISingleChunk(prompt, apiKey, tabId) {
+  const requestBody = {
+    model: 'gpt-4o-mini',
+    messages: [{ role: 'user', content: prompt }],
+    temperature: 0.7,
+    stream: true
+  };
+
+  const response = await fetch('https://api.openai.com/v1/chat/completions', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'Authorization': `Bearer ${apiKey}`
+    },
+    body: JSON.stringify(requestBody),
+  });
+
+  if (!response.ok) {
+    const errorData = await response.json();
+    handleApiError(response, errorData);
+  }
+
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let accumulatedTextContent = '';
+  let done = false;
+
+  while (!done) {
+    const { value, done: readerDone } = await reader.read();
+    done = readerDone;
+    const chunk = decoder.decode(value, { stream: true });
+
+    const lines = chunk.split('\n').filter(line => line.trim() && line.startsWith('data: '));
+
+    for (const line of lines) {
+      const data = line.replace('data: ', '');
+      if (data === '[DONE]') continue;
+
+      try {
+        const parsed = JSON.parse(data);
+        const content = parsed.choices[0]?.delta?.content;
+
+        if (content) {
+          accumulatedTextContent += content;
+
+          chrome.tabs.sendMessage(tabId, {
+            type: 'DISPLAY_STREAM_CHUNK',
+            payload: { text: content }
+          });
+
+          await new Promise(resolve => setTimeout(resolve, STREAMING_DELAY_MS));
+        }
+      } catch (parseError) {
+        continue;
+      }
+    }
+  }
+
+  // 최종 결과 파싱
+  const jsonMatch = accumulatedTextContent.match(/```json\s*\n?([\s\S]*?)(?:\n?```|$)/);
+  const jsonContent = jsonMatch ? jsonMatch[1] : accumulatedTextContent;
+  return JSON.parse(jsonContent);
+}
+
+// Claude 스트리밍 처리
+async function processClaudeSingleChunk(prompt, apiKey, tabId) {
+  const requestBody = {
+    model: 'claude-3-5-sonnet-20241022',
+    max_tokens: 8192,
+    messages: [{ role: 'user', content: prompt }],
+    stream: true
+  };
+
+  const response = await fetch('https://api.anthropic.com/v1/messages', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'x-api-key': apiKey,
+      'anthropic-version': '2023-06-01'
+    },
+    body: JSON.stringify(requestBody),
+  });
+
+  if (!response.ok) {
+    const errorData = await response.json();
+    handleApiError(response, errorData);
+  }
+
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let accumulatedTextContent = '';
+  let done = false;
+
+  while (!done) {
+    const { value, done: readerDone } = await reader.read();
+    done = readerDone;
+    const chunk = decoder.decode(value, { stream: true });
+
+    const lines = chunk.split('\n').filter(line => line.trim() && line.startsWith('data: '));
+
+    for (const line of lines) {
+      const data = line.replace('data: ', '');
+
+      try {
+        const parsed = JSON.parse(data);
+
+        if (parsed.type === 'content_block_delta' && parsed.delta?.text) {
+          const content = parsed.delta.text;
+          accumulatedTextContent += content;
+
+          chrome.tabs.sendMessage(tabId, {
+            type: 'DISPLAY_STREAM_CHUNK',
+            payload: { text: content }
+          });
+
+          await new Promise(resolve => setTimeout(resolve, STREAMING_DELAY_MS));
+        }
+      } catch (parseError) {
+        continue;
+      }
+    }
+  }
+
+  // 최종 결과 파싱
+  const jsonMatch = accumulatedTextContent.match(/```json\s*\n?([\s\S]*?)(?:\n?```|$)/);
+  const jsonContent = jsonMatch ? jsonMatch[1] : accumulatedTextContent;
+  return JSON.parse(jsonContent);
+}
+
+// Grok 스트리밍 처리 (OpenAI 호환)
+async function processGrokSingleChunk(prompt, apiKey, tabId) {
+  const requestBody = {
+    model: 'grok-beta',
+    messages: [{ role: 'user', content: prompt }],
+    temperature: 0.7,
+    stream: true
+  };
+
+  const response = await fetch('https://api.x.ai/v1/chat/completions', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'Authorization': `Bearer ${apiKey}`
+    },
+    body: JSON.stringify(requestBody),
+  });
+
+  if (!response.ok) {
+    const errorData = await response.json();
+    handleApiError(response, errorData);
+  }
+
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let accumulatedTextContent = '';
+  let done = false;
+
+  while (!done) {
+    const { value, done: readerDone } = await reader.read();
+    done = readerDone;
+    const chunk = decoder.decode(value, { stream: true });
+
+    const lines = chunk.split('\n').filter(line => line.trim() && line.startsWith('data: '));
+
+    for (const line of lines) {
+      const data = line.replace('data: ', '');
+      if (data === '[DONE]') continue;
+
+      try {
+        const parsed = JSON.parse(data);
+        const content = parsed.choices[0]?.delta?.content;
+
+        if (content) {
+          accumulatedTextContent += content;
+
+          chrome.tabs.sendMessage(tabId, {
+            type: 'DISPLAY_STREAM_CHUNK',
+            payload: { text: content }
+          });
+
+          await new Promise(resolve => setTimeout(resolve, STREAMING_DELAY_MS));
+        }
+      } catch (parseError) {
+        continue;
+      }
+    }
+  }
+
+  // 최종 결과 파싱
+  const jsonMatch = accumulatedTextContent.match(/```json\s*\n?([\s\S]*?)(?:\n?```|$)/);
+  const jsonContent = jsonMatch ? jsonMatch[1] : accumulatedTextContent;
+  return JSON.parse(jsonContent);
 }
