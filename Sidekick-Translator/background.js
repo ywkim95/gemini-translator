@@ -1,8 +1,13 @@
 console.log('[background.js] Service worker loaded');
 
-// Constants
-const CHUNK_SIZE = 5000;
-const CHUNK_BOUNDARY_THRESHOLD = 0.8;
+// Constants - 모델별 최적 청크 크기
+const MODEL_CHUNK_SIZES = {
+  gemini: 15000,    // Gemini 2.0 Flash는 큰 컨텍스트 처리 가능
+  openai: 12000,    // GPT-4o-mini 최적화
+  claude: 10000,    // Claude Sonnet 최적화
+  grok: 10000       // Grok-beta 최적화
+};
+const CHUNK_BOUNDARY_THRESHOLD = 0.85;  // 경계 찾기 임계값 증가
 const STREAMING_DELAY_MS = 10;
 const RATE_LIMIT_ERROR_MESSAGE = `🚫 API 사용량 제한에 도달했습니다
 
@@ -17,6 +22,62 @@ function handleApiError(response, errorData) {
   }
   const errorMessage = errorData?.error?.message || errorData?.message || JSON.stringify(errorData);
   throw new Error(`API Error: ${response.status} ${response.statusText} - ${errorMessage}`);
+}
+
+// 스마트 청킹: 의미 있는 경계에서 텍스트 분할
+function smartChunkText(text, maxChunkSize) {
+  if (text.length <= maxChunkSize) {
+    return [text];
+  }
+
+  const chunks = [];
+  let currentPosition = 0;
+
+  while (currentPosition < text.length) {
+    let chunkEnd = currentPosition + maxChunkSize;
+
+    // 마지막 청크인 경우
+    if (chunkEnd >= text.length) {
+      chunks.push(text.substring(currentPosition));
+      break;
+    }
+
+    // 최적의 분할 지점 찾기 (우선순위: 단락 > 문장 > 단어)
+    const searchStart = Math.floor(currentPosition + maxChunkSize * CHUNK_BOUNDARY_THRESHOLD);
+    const searchText = text.substring(searchStart, chunkEnd + 500); // 약간 더 앞을 살펴봄
+
+    // 1순위: 단락 경계 (\n\n)
+    const paragraphBreak = searchText.indexOf('\n\n');
+    if (paragraphBreak !== -1 && paragraphBreak < maxChunkSize * 0.3) {
+      chunkEnd = searchStart + paragraphBreak + 2;
+    } else {
+      // 2순위: 문장 끝 (. ! ?)
+      const sentenceEndings = ['. ', '.\n', '! ', '!\n', '? ', '?\n'];
+      let bestSentenceEnd = -1;
+
+      for (const ending of sentenceEndings) {
+        const pos = searchText.lastIndexOf(ending);
+        if (pos > bestSentenceEnd) {
+          bestSentenceEnd = pos;
+        }
+      }
+
+      if (bestSentenceEnd !== -1) {
+        chunkEnd = searchStart + bestSentenceEnd + 2;
+      } else {
+        // 3순위: 단어 경계
+        const lastSpace = searchText.lastIndexOf(' ');
+        if (lastSpace !== -1) {
+          chunkEnd = searchStart + lastSpace + 1;
+        }
+      }
+    }
+
+    chunks.push(text.substring(currentPosition, chunkEnd).trim());
+    currentPosition = chunkEnd;
+  }
+
+  return chunks.filter(chunk => chunk.length > 0);
 }
 
 // 툴바 아이콘 클릭 이벤트 처리
@@ -105,34 +166,14 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
           throw new Error(`${provider.toUpperCase()} API 키가 설정되지 않았습니다. 확장 프로그램 옵션에서 설정해주세요.`);
         }
 
-        // 텍스트 청킹 로직 - CHUNK_SIZE 단위로 분할
-        const textChunks = [];
-        const originalText = message.text;
+        // 모델별 최적 청크 크기 선택
+        const CHUNK_SIZE = MODEL_CHUNK_SIZES[provider] || 10000;
 
-        console.log(`[background.js] Original text length: ${originalText.length}`);
+        // 스마트 청킹: 의미 단위로 분할
+        const textChunks = smartChunkText(message.text, CHUNK_SIZE);
 
-        if (originalText.length <= CHUNK_SIZE) {
-          textChunks.push(originalText);
-        } else {
-          for (let i = 0; i < originalText.length; i += CHUNK_SIZE) {
-            let chunk = originalText.substring(i, i + CHUNK_SIZE);
-
-            if (i + CHUNK_SIZE < originalText.length) {
-              const lastSpaceIndex = chunk.lastIndexOf(' ');
-              const lastNewlineIndex = chunk.lastIndexOf('\n');
-              const lastBoundary = Math.max(lastSpaceIndex, lastNewlineIndex);
-
-              if (lastBoundary > CHUNK_SIZE * CHUNK_BOUNDARY_THRESHOLD) {
-                chunk = chunk.substring(0, lastBoundary + 1);
-                i = i + lastBoundary + 1 - CHUNK_SIZE;
-              }
-            }
-
-            textChunks.push(chunk);
-          }
-        }
-        
-        console.log(`[background.js] Split into ${textChunks.length} chunks`);
+        console.log(`[background.js] Original text length: ${message.text.length}`);
+        console.log(`[background.js] Split into ${textChunks.length} chunks using ${provider} model (chunk size: ${CHUNK_SIZE})`);
 
         if (textChunks.length === 1) {
           await processSingleChunk(textChunks[0], tabId, apiKey, provider, cacheKey);
@@ -153,25 +194,20 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 
 // 단일 청크 처리 함수
 async function processSingleChunk(text, tabId, apiKey, provider, cacheKey) {
-  const masterPrompt = `# 페르소나 (Persona)
-당신은 고도로 숙련된 정보 분석가이자 전문 번역가입니다. 당신의 임무는 사용자가 제공한 영문 텍스트의 핵심을 빠르고 정확하게 파악하여 명료한 한국어 요약문을 생성하고, 원문의 뉘앙스를 최대한 살리면서 자연스러운 한국어로 전체를 번역하는 것입니다.
+  const masterPrompt = `당신은 전문 번역가입니다. 아래 텍스트를 분석하여 JSON 형식으로 응답하세요.
 
-# 지시사항 (Instruction)
-아래 "처리할 텍스트" 부분에 제공된 내용을 분석하여, 다음 두 가지 과업을 수행해주십시오.
-당신의 응답은 반드시 지정된 JSON 형식만을 포함해야 합니다. JSON 객체 외의 다른 설명, 인사, 추가 텍스트를 절대로 포함해서는 안 됩니다.
-
-## 최종 출력 JSON 형식
-모든 문자열 값은 JSON 표준에 따라 이스케이프 처리되어야 합니다 (예: 큰따옴표는 ", 줄바꿈은 \n).
+**응답 형식 (JSON만):**
 {
-  "summary": "이곳에는 텍스트의 핵심 주제와 결론을 담은 3~5개의 간결한 한국어 문장으로 구성된 **마크다운 형식의 글머리 기호 목록**을 넣어주세요.",
-  "translated_text": "이곳에는 '처리할 텍스트'의 전체 내용을 문단 구조를 유지하며 자연스러운 한국어로 번역한 결과를 **마크다운 형식**으로 넣어주세요. 원본의 제목, 부제목, 목록 등도 마크다운 문법으로 표현해주세요."
+  "summary": "핵심 내용을 3-5개 글머리 기호로 요약 (마크다운 형식)",
+  "translated_text": "전체 내용을 자연스러운 한국어로 번역 (마크다운 형식, 문단 구조 유지)"
 }
 
-# 예외 처리 규정 (Edge Case Rules)
-1.  만약 "처리할 텍스트"의 내용이 3문장 미만으로 너무 짧아 유의미한 요약이 불가능할 경우, "summary" 키의 값으로 "요약하기에는 텍스트가 너무 짧습니다."를 반환하세요.
-2.  만약 "처리할 텍스트"의 내용이 분석 불가능한 문자(예: 깨진 인코딩, 무작위 문자열)로 판단될 경우, "summary"와 "translated_text" 키의 값 모두에 "분석할 수 없는 콘텐츠입니다."를 반환하세요.
+**주의사항:**
+- JSON 외 다른 텍스트 포함 금지
+- 텍스트가 너무 짧으면 summary에 "요약하기에는 텍스트가 너무 짧습니다." 반환
+- 분석 불가능한 내용이면 두 필드 모두 "분석할 수 없는 콘텐츠입니다." 반환
 
-# 처리할 텍스트 (Text to Process)
+**텍스트:**
 
 ${text}`;
 
@@ -196,25 +232,20 @@ ${text}`;
   chrome.tabs.sendMessage(tabId, { type: 'DISPLAY_RESULTS', payload: result });
 }
 
-// 여러 청크 처리 함수
+// 여러 청크 처리 함수 - 계층적 요약 방식
 async function processMultipleChunks(textChunks, tabId, apiKey, provider, cacheKey) {
-  console.log(`[background.js] Processing ${textChunks.length} chunks`);
-  
-  const chunkPrompt = (chunkIndex, totalChunks, chunkText) => `# 페르소나 (Persona)
-당신은 고도로 숙련된 정보 분석가이자 전문 번역가입니다.
+  console.log(`[background.js] Processing ${textChunks.length} chunks with hierarchical summarization`);
 
-# 지시사항 (Instruction)
-이것은 긴 텍스트의 일부분입니다 (${chunkIndex + 1}/${totalChunks}번째 청크).
-아래 텍스트를 자연스러운 한국어로 번역해주세요.
-당신의 응답은 반드시 지정된 JSON 형식만을 포함해야 합니다.
+  const chunkPrompt = (chunkIndex, totalChunks, chunkText) => `청크 ${chunkIndex + 1}/${totalChunks}을 번역하고 핵심 포인트를 추출하세요.
 
-## 최종 출력 JSON 형식
+**응답 형식 (JSON만):**
 {
   "chunk_index": ${chunkIndex},
-  "translated_text": "이곳에는 제공된 텍스트를 자연스러운 한국어로 번역한 결과를 마크다운 형식으로 넣어주세요."
+  "translated_text": "번역 내용 (마크다운 형식)",
+  "key_points": "이 부분의 핵심 내용 2-3줄 요약"
 }
 
-# 처리할 텍스트 (Text to Process)
+**텍스트:**
 
 ${chunkText}`;
 
@@ -246,49 +277,47 @@ ${chunkText}`;
     }
   }
   
-  // 모든 청크 번역 완료 후 전체 내용으로 요약 생성
+  // 계층적 요약: 각 청크의 key_points를 모아서 최종 요약 생성
   const fullTranslatedText = chunkResults.map(chunk => chunk.translated_text).join('\n\n');
-  
-  console.log('[background.js] Generating summary for combined chunks');
-  
+  const allKeyPoints = chunkResults.map((chunk, idx) =>
+    `**파트 ${idx + 1}:** ${chunk.key_points || ''}`
+  ).filter(kp => kp.length > 15).join('\n');
+
+  console.log('[background.js] Generating hierarchical summary from key points');
+
   try {
-    // 요약 생성을 위한 별도 API 호출
-    const summaryPrompt = `# 페르소나 (Persona)
-당신은 고도로 숙련된 정보 분석가입니다.
+    // 핵심 포인트들을 종합하여 최종 요약 생성 (훨씬 짧은 입력)
+    const summaryPrompt = `다음은 긴 문서의 각 부분에서 추출한 핵심 포인트입니다. 이를 종합하여 전체 문서의 요약을 작성하세요.
 
-# 지시사항 (Instruction)
-아래 번역된 긴 텍스트를 읽고 핵심 내용을 간결하게 요약해주세요.
-당신의 응답은 반드시 지정된 JSON 형식만을 포함해야 합니다.
-
-## 최종 출력 JSON 형식
+**응답 형식 (JSON만):**
 {
-  "summary": "이곳에는 문서의 핵심 내용을 3-5줄로 간결하게 요약한 결과를 마크다운 형식으로 넣어주세요."
+  "summary": "3-5개 글머리 기호로 전체 문서 요약 (마크다운 형식)"
 }
 
-# 요약할 번역 텍스트 (Text to Summarize)
+**핵심 포인트들:**
 
-${fullTranslatedText}`;
+${allKeyPoints}`;
 
     const summaryResult = await processChunkWithAPI(summaryPrompt, apiKey, provider, tabId, -1);
-    
+
     const combinedResult = {
-      summary: summaryResult.summary || summaryResult.translated_text || `이 문서는 ${textChunks.length}개 섹션으로 나뉘어 번역되었습니다.`,
+      summary: summaryResult.summary || `이 문서는 ${textChunks.length}개 섹션으로 구성되어 있습니다.\n\n${allKeyPoints}`,
       translated_text: fullTranslatedText
     };
-    
+
     await chrome.storage.local.set({ [cacheKey]: combinedResult });
     chrome.tabs.sendMessage(tabId, { type: 'STREAMING_END' });
     chrome.tabs.sendMessage(tabId, { type: 'DISPLAY_RESULTS', payload: combinedResult });
-    
+
   } catch (summaryError) {
     console.error('[background.js] Error generating summary:', summaryError);
-    
-    // 요약 생성 실패 시 기본 결과 사용
+
+    // 요약 생성 실패 시 key_points를 직접 사용
     const combinedResult = {
-      summary: `이 문서는 ${textChunks.length}개 섹션으로 나뉘어 번역되었습니다.`,
+      summary: allKeyPoints || `이 문서는 ${textChunks.length}개 섹션으로 나뉘어 번역되었습니다.`,
       translated_text: fullTranslatedText
     };
-    
+
     await chrome.storage.local.set({ [cacheKey]: combinedResult });
     chrome.tabs.sendMessage(tabId, { type: 'STREAMING_END' });
     chrome.tabs.sendMessage(tabId, { type: 'DISPLAY_RESULTS', payload: combinedResult });
@@ -389,30 +418,30 @@ async function processChunkWithAPI(prompt, apiKey, provider, tabId, chunkIndex) 
   }
   
   try {
+    // JSON 블록 추출 시도
     const jsonMatch = textContent.match(/```json\s*\n?([\s\S]*?)(?:\n?```|$)/);
     const jsonContent = jsonMatch ? jsonMatch[1] : textContent;
-    
+
     // JSON 파싱 시도
     let result;
     try {
-      result = JSON.parse(jsonContent);
+      result = JSON.parse(jsonContent.trim());
     } catch (parseError) {
       // JSON 파싱 실패 시 텍스트에서 직접 추출 시도
       console.warn(`[background.js] JSON parsing failed for chunk ${chunkIndex}, attempting text extraction:`, parseError);
-      
+
       // 요약 생성용인지 번역용인지 구분하여 처리
       if (chunkIndex === -1) {
         // 요약 생성용
-        const summaryMatch = textContent.match(/"summary":\s*"([^"]*(?:\\.[^"]*)*)"/) || 
-                            textContent.match(/summary[:\s]*([^\n]+)/);
-        
+        const summaryMatch = textContent.match(/"summary":\s*"([^"]*(?:\\.[^"]*)*)"/s);
+
         if (summaryMatch) {
           const extractedSummary = summaryMatch[1]
             .replace(/\\n/g, '\n')
             .replace(/\\"/g, '"')
             .replace(/\\t/g, '\t')
             .replace(/\\\\/g, '\\');
-          
+
           result = {
             summary: extractedSummary
           };
@@ -424,33 +453,41 @@ async function processChunkWithAPI(prompt, apiKey, provider, tabId, chunkIndex) 
           console.log(`[background.js] Used full text as summary fallback`);
         }
       } else {
-        // 번역용
-        const translatedTextMatch = textContent.match(/"translated_text":\s*"([^"]*(?:\\.[^"]*)*)"/) || 
-                                   textContent.match(/translated_text[:\s]*([^\n]+)/);
-        
+        // 번역용 (key_points도 추출)
+        const translatedTextMatch = textContent.match(/"translated_text":\s*"([^"]*(?:\\.[^"]*)*)"/s);
+        const keyPointsMatch = textContent.match(/"key_points":\s*"([^"]*(?:\\.[^"]*)*)"/s);
+
         if (translatedTextMatch) {
           const extractedText = translatedTextMatch[1]
             .replace(/\\n/g, '\n')
             .replace(/\\"/g, '"')
             .replace(/\\t/g, '\t')
             .replace(/\\\\/g, '\\');
-          
+
+          const extractedKeyPoints = keyPointsMatch ? keyPointsMatch[1]
+            .replace(/\\n/g, '\n')
+            .replace(/\\"/g, '"')
+            .replace(/\\t/g, '\t')
+            .replace(/\\\\/g, '\\') : '';
+
           result = {
             chunk_index: chunkIndex,
-            translated_text: extractedText
+            translated_text: extractedText,
+            key_points: extractedKeyPoints
           };
-          console.log(`[background.js] Successfully extracted text from chunk ${chunkIndex}`);
+          console.log(`[background.js] Successfully extracted text and key points from chunk ${chunkIndex}`);
         } else {
           // 마지막 수단: 전체 텍스트를 번역 결과로 사용
           result = {
             chunk_index: chunkIndex,
-            translated_text: textContent.replace(/```json|```/g, '').trim()
+            translated_text: textContent.replace(/```json|```/g, '').trim(),
+            key_points: ''
           };
           console.log(`[background.js] Used full text as fallback for chunk ${chunkIndex}`);
         }
       }
     }
-    
+
     return result;
   } catch (jsonError) {
     console.error(`[background.js] JSON parsing error for chunk ${chunkIndex}:`, jsonError);
