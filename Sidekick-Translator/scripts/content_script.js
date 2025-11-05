@@ -44,7 +44,8 @@
     
     // "ANALYZE_PAGE" 요청을 받으면 Readability.js로 본문을 추출하여 background.js로 보냄
     if (message.type === 'ANALYZE_PAGE') {
-        console.log("[content_script.js] Received ANALYZE_PAGE request.");
+        const mode = message.mode || 'summary'; // 'summary' or 'full'
+        console.log(`[content_script.js] Received ANALYZE_PAGE request with mode: ${mode}`);
         try {
             if (typeof Readability === 'undefined') {
                 throw new Error('Readability library not available.');
@@ -56,9 +57,13 @@
             if (!textContent || textContent.trim().length < 100) {
                  throw new Error('Could not extract meaningful text from the page.');
             }
-            
-            // background.js로 추출한 텍스트를 보내 분석 요청
-            chrome.runtime.sendMessage({ type: "ANALYZE_TEXT", text: textContent });
+
+            // background.js로 추출한 텍스트를 보내 분석 요청 (mode 포함)
+            chrome.runtime.sendMessage({
+                type: "ANALYZE_TEXT",
+                text: textContent,
+                mode: mode  // 'summary' or 'full'
+            });
             sendResponse({ status: "analysis_started" });
 
         } catch (error) {

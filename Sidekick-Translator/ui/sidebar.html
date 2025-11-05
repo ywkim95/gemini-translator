@@ -17,22 +17,42 @@
       <button id="analyze-btn" class="analyze-btn">요약/번역</button>
       <button id="close-sidebar-btn" class="close-btn">&times;</button>
     </div>
-    <div id="st-loading-state" class="state-view" style="display:none;">
-      <div class="spinner"></div>
-      <p>Gemini가 페이지를 분석 중입니다...</p>
+    <!-- Tab Navigation -->
+    <div class="tab-nav">
+      <button class="tab-btn active" data-tab="summary">📝 요약</button>
+      <button class="tab-btn" data-tab="full">📄 전체 번역</button>
     </div>
-    <div id="st-result-state" class="state-view" style="display:none;">
-      <div class="section">
-        <h3>핵심 요약</h3>
-        <div id="st-summary"></div>
+
+    <!-- Summary Tab Content -->
+    <div id="summary-tab" class="tab-content active">
+      <div id="st-loading-state-summary" class="state-view" style="display:none;">
+        <div class="spinner"></div>
+        <p>요약을 생성 중입니다...</p>
       </div>
-      <div class="section">
-        <h3>전체 번역문</h3>
-        <div id="st-translation"></div>
+      <div id="st-result-state-summary" class="state-view" style="display:none;">
+        <div class="section">
+          <div id="st-summary"></div>
+        </div>
+      </div>
+      <div id="st-error-state-summary" class="state-view" style="display:none;">
+        <p id="st-error-message-summary"></p>
       </div>
     </div>
-    <div id="st-error-state" class="state-view" style="display:none;">
-      <p id="st-error-message"></p>
+
+    <!-- Full Translation Tab Content -->
+    <div id="full-tab" class="tab-content">
+      <div id="st-loading-state-full" class="state-view" style="display:none;">
+        <div class="spinner"></div>
+        <p>전체 번역을 진행 중입니다...</p>
+      </div>
+      <div id="st-result-state-full" class="state-view" style="display:none;">
+        <div class="section">
+          <div id="st-translation"></div>
+        </div>
+      </div>
+      <div id="st-error-state-full" class="state-view" style="display:none;">
+        <p id="st-error-message-full"></p>
+      </div>
     </div>
   </div>
   

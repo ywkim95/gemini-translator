@@ -5,20 +5,74 @@ document.addEventListener('DOMContentLoaded', () => {
   const FINAL_RESULT_DELAY_MS = 500;
 
   const analyzeBtn = document.getElementById('analyze-btn');
-  const loadingView = document.getElementById('st-loading-state');
-  const resultView = document.getElementById('st-result-state');
-  const errorView = document.getElementById('st-error-state');
-  const errorMessage = document.getElementById('st-error-message');
-  const summaryEl = document.getElementById('st-summary');
-  const translationEl = document.getElementById('st-translation');
   const converter = new showdown.Converter();
 
-  // Streaming state management
-  let isStreaming = false;
-  let streamingText = '';
-  let streamingTimer = null;
+  // Tab elements
+  const tabBtns = document.querySelectorAll('.tab-btn');
+  const tabContents = document.querySelectorAll('.tab-content');
+  let currentTab = 'summary'; // 'summary' | 'full'
+
+  // Summary tab elements
+  const loadingViewSummary = document.getElementById('st-loading-state-summary');
+  const resultViewSummary = document.getElementById('st-result-state-summary');
+  const errorViewSummary = document.getElementById('st-error-state-summary');
+  const errorMessageSummary = document.getElementById('st-error-message-summary');
+  const summaryEl = document.getElementById('st-summary');
+
+  // Full translation tab elements
+  const loadingViewFull = document.getElementById('st-loading-state-full');
+  const resultViewFull = document.getElementById('st-result-state-full');
+  const errorViewFull = document.getElementById('st-error-state-full');
+  const errorMessageFull = document.getElementById('st-error-message-full');
+  const translationEl = document.getElementById('st-translation');
+
+  // Streaming state management (per tab)
+  let streamingStateSummary = {
+    isStreaming: false,
+    text: '',
+    timer: null
+  };
+
+  let streamingStateFull = {
+    isStreaming: false,
+    text: '',
+    currentTranslation: '',
+    timer: null
+  };
+
+  // Data storage
   let currentSummary = '';
   let currentTranslation = '';
+
+  // Tab switching logic
+  tabBtns.forEach(btn => {
+    btn.addEventListener('click', () => {
+      const targetTab = btn.dataset.tab;
+
+      // Update active tab button
+      tabBtns.forEach(b => b.classList.remove('active'));
+      btn.classList.add('active');
+
+      // Update active tab content
+      tabContents.forEach(content => content.classList.remove('active'));
+      document.getElementById(`${targetTab}-tab`).classList.add('active');
+
+      // Update current tab
+      currentTab = targetTab;
+
+      // If clicking full tab and no data yet, trigger analysis
+      if (targetTab === 'full' && !currentTranslation) {
+        console.log('[sidebar.js] Full tab clicked, requesting full translation');
+        requestAnalysis('full');
+      }
+
+      // If clicking summary tab and no data yet, trigger analysis
+      if (targetTab === 'summary' && !currentSummary) {
+        console.log('[sidebar.js] Summary tab clicked, requesting summary');
+        requestAnalysis('summary');
+      }
+    });
+  });
 
   // Toast 메시지 표시 함수
   function showToast(message, type = 'success') {
@@ -26,7 +80,7 @@ document.addEventListener('DOMContentLoaded', () => {
     const toastMessage = document.getElementById('toast-message');
     const toastIcon = document.getElementById('toast-icon');
     const toastText = document.getElementById('toast-text');
-    
+
     // 아이콘 설정
     if (type === 'success') {
       toastIcon.textContent = '✅';
@@ -35,7 +89,7 @@ document.addEventListener('DOMContentLoaded', () => {
       toastIcon.textContent = '❌';
       toastMessage.className = 'error';
     }
-    
+
     toastText.textContent = message;
     toastContainer.style.display = 'block';
 
@@ -49,123 +103,98 @@ document.addEventListener('DOMContentLoaded', () => {
     }, TOAST_DISPLAY_DURATION_MS);
   }
 
-  // Helper function to extract and display streaming content
-  function displayStreamingText(text) {
-    streamingText += text;
-    
-    // Try to extract summary and translated_text from the accumulated text
+  // Helper function to extract and display streaming content for summary
+  function displayStreamingTextSummary(text) {
+    streamingStateSummary.text += text;
+
     try {
-      // More aggressive parsing - look for partial content too
-      let updatedSummary = false;
-      let updatedTranslation = false;
-      
-      // Look for JSON structure (with or without markdown code blocks)
-      let contentToSearch = streamingText;
-      const jsonMatch = streamingText.match(/```json\s*\n?([\s\S]*?)(?:\n?```|$)/);
+      let contentToSearch = streamingStateSummary.text;
+      const jsonMatch = streamingStateSummary.text.match(/```json\s*\n?([\s\S]*?)(?:\n?```|$)/);
       if (jsonMatch) {
         contentToSearch = jsonMatch[1];
       }
-      
-      // Try to extract summary with more flexible pattern
-      const summaryMatch = contentToSearch.match(/"summary":\s*"([^]*?)(?=",?\s*"translated_text"|",?\s*}|$)/);
+
+      const summaryMatch = contentToSearch.match(/"summary":\s*"([^]*?)(?="|$)/);
       if (summaryMatch) {
-        const newSummary = summaryMatch[1].replace(/\\n/g, '\n').replace(/\\"/g, '"').replace(/\\$/, '');
-        if (newSummary !== currentSummary && newSummary.length > currentSummary.length) {
-          currentSummary = newSummary;
-          updatedSummary = true;
-        }
+        currentSummary = summaryMatch[1].replace(/\\n/g, '\n').replace(/\\"/g, '"');
       }
-      
-      // Try to extract translated_text with more flexible pattern
-      const translatedMatch = contentToSearch.match(/"translated_text":\s*"([^]*?)(?="\s*}|$)/);
-      if (translatedMatch) {
-        const newTranslation = translatedMatch[1].replace(/\\n/g, '\n').replace(/\\"/g, '"').replace(/\\$/, '');
-        if (newTranslation !== currentTranslation && newTranslation.length > currentTranslation.length) {
-          currentTranslation = newTranslation;
-          updatedTranslation = true;
-        }
-      }
-      
-      // Also try to extract content even if it's incomplete - more aggressive approach
-      const partialSummaryMatch = contentToSearch.match(/"summary":\s*"([^]*?)(?="|$)/);
-      if (partialSummaryMatch && partialSummaryMatch[1].length > currentSummary.length) {
-        currentSummary = partialSummaryMatch[1].replace(/\\n/g, '\n').replace(/\\"/g, '"');
-        updatedSummary = true;
-      }
-      
-      const partialTranslatedMatch = contentToSearch.match(/"translated_text":\s*"([^]*?)(?="|$)/);
-      if (partialTranslatedMatch && partialTranslatedMatch[1].length > currentTranslation.length) {
-        currentTranslation = partialTranslatedMatch[1].replace(/\\n/g, '\n').replace(/\\"/g, '"');
-        updatedTranslation = true;
-      }
-      
-      // Even more aggressive - look for any meaningful text content
-      if (!currentSummary && !currentTranslation) {
-        // If we see any structured text, show it immediately
-        const anyTextMatch = streamingText.match(/[가-힣\w\s]+/);
-        if (anyTextMatch) {
-          currentSummary = anyTextMatch[0];
-          updatedSummary = true;
-        }
-      }
-      
-      console.log('[sidebar.js] Current summary length:', currentSummary.length, 'Translation length:', currentTranslation.length);
-      
+
+      console.log('[sidebar.js] Summary length:', currentSummary.length);
     } catch (e) {
-      // If parsing fails, just continue - we'll show whatever we have
       console.log('[sidebar.js] Could not parse streaming JSON:', e);
     }
-    
-    // Update display immediately - always show something
-    if (currentSummary || currentTranslation) {
-      if (currentSummary) {
-        summaryEl.innerHTML = currentSummary + '<span class="streaming-cursor">|</span>';
-      }
-      if (currentTranslation) {
-        translationEl.innerHTML = currentTranslation + '<span class="streaming-cursor">|</span>';
-      }
-      if (!currentSummary) {
-        summaryEl.innerHTML = 'Loading summary...<span class="streaming-cursor">|</span>';
-      }
-      if (!currentTranslation) {
-        translationEl.innerHTML = 'Loading translation...<span class="streaming-cursor">|</span>';
-      }
+
+    if (currentSummary) {
+      summaryEl.innerHTML = currentSummary + '<span class="streaming-cursor">|</span>';
     } else {
-      // Show that we're processing
       summaryEl.innerHTML = 'Processing...<span class="streaming-cursor">|</span>';
+    }
+
+    summaryEl.scrollTop = summaryEl.scrollHeight;
+  }
+
+  // Helper function for full translation streaming
+  function displayStreamingTextFull(text) {
+    streamingStateFull.text += text;
+
+    try {
+      let contentToSearch = streamingStateFull.text;
+      const jsonMatch = streamingStateFull.text.match(/```json\s*\n?([\s\S]*?)(?:\n?```|$)/);
+      if (jsonMatch) {
+        contentToSearch = jsonMatch[1];
+      }
+
+      const translatedMatch = contentToSearch.match(/"translated_text":\s*"([^]*?)(?="|$)/);
+      if (translatedMatch) {
+        streamingStateFull.currentTranslation = translatedMatch[1].replace(/\\n/g, '\n').replace(/\\"/g, '"');
+      }
+
+      console.log('[sidebar.js] Translation length:', streamingStateFull.currentTranslation.length);
+    } catch (e) {
+      console.log('[sidebar.js] Could not parse streaming JSON:', e);
+    }
+
+    if (streamingStateFull.currentTranslation) {
+      translationEl.innerHTML = streamingStateFull.currentTranslation + '<span class="streaming-cursor">|</span>';
+    } else {
       translationEl.innerHTML = 'Processing...<span class="streaming-cursor">|</span>';
     }
-    
-    // Auto-scroll to bottom
-    summaryEl.scrollTop = summaryEl.scrollHeight;
+
     translationEl.scrollTop = translationEl.scrollHeight;
   }
 
-  // 분석 시작 버튼 이벤트
-  analyzeBtn.addEventListener('click', () => {
-    resultView.style.display = 'none';
-    errorView.style.display = 'none';
-    loadingView.style.display = 'block';
-    summaryEl.innerHTML = ''; // Clear previous content
-    translationEl.innerHTML = ''; // Clear previous content
-    
+  // Request analysis with mode
+  function requestAnalysis(mode) {
+    // Reset state based on mode
+    if (mode === 'summary') {
+      resultViewSummary.style.display = 'none';
+      errorViewSummary.style.display = 'none';
+      loadingViewSummary.style.display = 'block';
+      summaryEl.innerHTML = '';
+      streamingStateSummary = { isStreaming: false, text: '', timer: null };
+    } else if (mode === 'full') {
+      resultViewFull.style.display = 'none';
+      errorViewFull.style.display = 'none';
+      loadingViewFull.style.display = 'block';
+      translationEl.innerHTML = '';
+      streamingStateFull = { isStreaming: false, text: '', currentTranslation: '', timer: null };
+    }
+
     // Export 버튼 숨기기
     document.getElementById('export-btn').style.display = 'none';
-    
-    // Reset streaming state
-    isStreaming = false;
-    streamingText = '';
-    currentSummary = '';
-    currentTranslation = '';
-    if (streamingTimer) {
-      clearTimeout(streamingTimer);
-      streamingTimer = null;
-    }
-    
+
     // content_script에 분석 요청
     chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
-      chrome.tabs.sendMessage(tabs[0].id, { type: "ANALYZE_PAGE" });
+      chrome.tabs.sendMessage(tabs[0].id, {
+        type: "ANALYZE_PAGE",
+        mode: mode  // 'summary' or 'full'
+      });
     });
+  }
+
+  // 분석 시작 버튼 이벤트 (현재 탭에 따라 다른 모드)
+  analyzeBtn.addEventListener('click', () => {
+    requestAnalysis(currentTab);
   });
 
   // 닫기 버튼
@@ -187,7 +216,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
     // content_script에 export 요청
     chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
-      chrome.tabs.sendMessage(tabs[0].id, { 
+      chrome.tabs.sendMessage(tabs[0].id, {
         type: "EXPORT_CONTENT",
         payload: {
           summary: currentSummary,
@@ -199,7 +228,6 @@ document.addEventListener('DOMContentLoaded', () => {
     });
   });
 
-
   // 페이지 로드 시 캐시된 결과 확인 및 표시
   function loadCachedResults() {
     chrome.tabs.query({ active: true, currentWindow: true }, async (tabs) => {
@@ -207,28 +235,40 @@ document.addEventListener('DOMContentLoaded', () => {
 
       const tabId = tabs[0].id;
       const tabUrl = tabs[0].url;
-      const cacheKey = `cachedResult-${tabId}-${tabUrl}`;
+      const cacheKeySummary = `cachedResult-${tabId}-${tabUrl}-summary`;
+      const cacheKeyFull = `cachedResult-${tabId}-${tabUrl}-full`;
 
-      chrome.storage.local.get([cacheKey], (result) => {
-        if (result[cacheKey]) {
-          console.log('[sidebar.js] Found cached result, displaying automatically');
+      chrome.storage.local.get([cacheKeySummary, cacheKeyFull], (result) => {
+        // Load summary if available
+        if (result[cacheKeySummary]) {
+          console.log('[sidebar.js] Found cached summary, displaying');
+          currentSummary = result[cacheKeySummary].summary || result[cacheKeySummary].translated_text;
 
-          // 캐시된 결과를 currentSummary와 currentTranslation에 저장
-          currentSummary = result[cacheKey].summary;
-          currentTranslation = result[cacheKey].translated_text;
-
-          // 결과 표시
-          loadingView.style.display = 'none';
-          errorView.style.display = 'none';
-          resultView.style.display = 'block';
-
-          summaryEl.innerHTML = converter.makeHtml(result[cacheKey].summary);
-          translationEl.innerHTML = converter.makeHtml(result[cacheKey].translated_text);
+          loadingViewSummary.style.display = 'none';
+          errorViewSummary.style.display = 'none';
+          resultViewSummary.style.display = 'block';
+          summaryEl.innerHTML = converter.makeHtml(currentSummary);
 
           // Export 버튼 표시
-          document.getElementById('export-btn').style.display = 'inline-flex';
-        } else {
-          console.log('[sidebar.js] No cached result found');
+          if (currentSummary) {
+            document.getElementById('export-btn').style.display = 'inline-flex';
+          }
+        }
+
+        // Load full translation if available
+        if (result[cacheKeyFull]) {
+          console.log('[sidebar.js] Found cached full translation, displaying');
+          currentTranslation = result[cacheKeyFull].translated_text;
+
+          loadingViewFull.style.display = 'none';
+          errorViewFull.style.display = 'none';
+          resultViewFull.style.display = 'block';
+          translationEl.innerHTML = converter.makeHtml(currentTranslation);
+
+          // Export 버튼 표시
+          if (currentTranslation) {
+            document.getElementById('export-btn').style.display = 'inline-flex';
+          }
         }
       });
     });
@@ -239,97 +279,134 @@ document.addEventListener('DOMContentLoaded', () => {
 
   // background.js로부터 결과/에러 수신
   chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+    const mode = message.mode || 'summary'; // Default to summary for backward compatibility
+
     if (message.type === 'STREAMING_START') {
-      // Start streaming mode
-      isStreaming = true;
-      streamingText = '';
-      currentSummary = '';
-      currentTranslation = '';
-      loadingView.style.display = 'none';
-      resultView.style.display = 'block';
-      summaryEl.innerHTML = '<span class="streaming-cursor">|</span>';
-      translationEl.innerHTML = '<span class="streaming-cursor">|</span>';
-      
+      if (mode === 'summary') {
+        streamingStateSummary.isStreaming = true;
+        streamingStateSummary.text = '';
+        loadingViewSummary.style.display = 'none';
+        resultViewSummary.style.display = 'block';
+        summaryEl.innerHTML = '<span class="streaming-cursor">|</span>';
+      } else if (mode === 'full') {
+        streamingStateFull.isStreaming = true;
+        streamingStateFull.text = '';
+        streamingStateFull.currentTranslation = '';
+        loadingViewFull.style.display = 'none';
+        resultViewFull.style.display = 'block';
+        translationEl.innerHTML = '<span class="streaming-cursor">|</span>';
+      }
+
     } else if (message.type === 'DISPLAY_STREAM_CHUNK') {
-      if (isStreaming) {
-        // Display streaming text in real-time
-        displayStreamingText(message.payload.text);
+      if (mode === 'summary' && streamingStateSummary.isStreaming) {
+        displayStreamingTextSummary(message.payload.text);
+      } else if (mode === 'full' && streamingStateFull.isStreaming) {
+        displayStreamingTextFull(message.payload.text);
       }
-      
+
     } else if (message.type === 'CHUNK_PROGRESS') {
-      // 청크 처리 진행 상황 표시
+      // 청크 처리 진행 상황 표시 (full translation only)
       const { current, total, text } = message.payload;
-      summaryEl.innerHTML = `Processing chunk ${current}/${total}...<span class="streaming-cursor">|</span>`;
-      
-      // 번역된 텍스트를 누적하여 표시
-      if (text) {
-        if (!currentTranslation) {
-          currentTranslation = text;
-        } else {
-          currentTranslation += '\n\n' + text;
+
+      if (mode === 'full') {
+        summaryEl.innerHTML = `Processing chunk ${current}/${total}...<span class="streaming-cursor">|</span>`;
+
+        if (text) {
+          if (!streamingStateFull.currentTranslation) {
+            streamingStateFull.currentTranslation = text;
+          } else {
+            streamingStateFull.currentTranslation += '\n\n' + text;
+          }
+          translationEl.innerHTML = streamingStateFull.currentTranslation + '<span class="streaming-cursor">|</span>';
+          translationEl.scrollTop = translationEl.scrollHeight;
         }
-        translationEl.innerHTML = currentTranslation + '<span class="streaming-cursor">|</span>';
-        translationEl.scrollTop = translationEl.scrollHeight;
       }
-      
+
     } else if (message.type === 'STREAMING_END') {
-      // End streaming mode and remove cursor
-      if (isStreaming) {
-        isStreaming = false;
-        // Remove cursor from the display and show final extracted content
-        summaryEl.innerHTML = currentSummary || streamingText;
-        translationEl.innerHTML = currentTranslation || streamingText;
-        
-        // Export 버튼 표시 (스트리밍 완료)
-        if (currentSummary || currentTranslation) {
+      if (mode === 'summary') {
+        streamingStateSummary.isStreaming = false;
+        summaryEl.innerHTML = currentSummary || streamingStateSummary.text;
+
+        if (currentSummary) {
+          document.getElementById('export-btn').style.display = 'inline-flex';
+        }
+      } else if (mode === 'full') {
+        streamingStateFull.isStreaming = false;
+        translationEl.innerHTML = streamingStateFull.currentTranslation || streamingStateFull.text;
+
+        if (streamingStateFull.currentTranslation) {
           document.getElementById('export-btn').style.display = 'inline-flex';
         }
       }
-      
+
     } else if (message.type === 'DISPLAY_RESULTS') {
-      // Final results - replace streaming text with properly formatted content
-      isStreaming = false;
-      if (streamingTimer) {
-        clearTimeout(streamingTimer);
-        streamingTimer = null;
+      if (mode === 'summary') {
+        streamingStateSummary.isStreaming = false;
+        if (streamingStateSummary.timer) {
+          clearTimeout(streamingStateSummary.timer);
+          streamingStateSummary.timer = null;
+        }
+
+        loadingViewSummary.style.display = 'none';
+        resultViewSummary.style.display = 'block';
+
+        currentSummary = message.payload.summary || message.payload.translated_text;
+
+        document.getElementById('export-btn').style.display = 'inline-flex';
+
+        setTimeout(() => {
+          summaryEl.innerHTML = converter.makeHtml(currentSummary);
+        }, FINAL_RESULT_DELAY_MS);
+
+      } else if (mode === 'full') {
+        streamingStateFull.isStreaming = false;
+        if (streamingStateFull.timer) {
+          clearTimeout(streamingStateFull.timer);
+          streamingStateFull.timer = null;
+        }
+
+        loadingViewFull.style.display = 'none';
+        resultViewFull.style.display = 'block';
+
+        currentTranslation = message.payload.translated_text;
+
+        document.getElementById('export-btn').style.display = 'inline-flex';
+
+        setTimeout(() => {
+          translationEl.innerHTML = converter.makeHtml(currentTranslation);
+        }, FINAL_RESULT_DELAY_MS);
       }
-      
-      loadingView.style.display = 'none';
-      resultView.style.display = 'block';
-      
-      // 캐시된 결과를 위해 currentSummary와 currentTranslation 업데이트
-      currentSummary = message.payload.summary;
-      currentTranslation = message.payload.translated_text;
-      
-      // Export 버튼 표시 (번역 완료)
-      document.getElementById('export-btn').style.display = 'inline-flex';
-      
-      // Add a small delay for better UX transition
-      setTimeout(() => {
-        summaryEl.innerHTML = converter.makeHtml(message.payload.summary);
-        translationEl.innerHTML = converter.makeHtml(message.payload.translated_text);
-      }, FINAL_RESULT_DELAY_MS);
-      
+
     } else if (message.type === 'DISPLAY_ERROR' || message.type === 'ANALYSIS_ERROR') {
-      isStreaming = false;
-      streamingText = '';
-      currentSummary = '';
-      currentTranslation = '';
-      if (streamingTimer) {
-        clearTimeout(streamingTimer);
-        streamingTimer = null;
+      if (mode === 'summary') {
+        streamingStateSummary.isStreaming = false;
+        streamingStateSummary.text = '';
+        if (streamingStateSummary.timer) {
+          clearTimeout(streamingStateSummary.timer);
+          streamingStateSummary.timer = null;
+        }
+
+        loadingViewSummary.style.display = 'none';
+        errorViewSummary.style.display = 'block';
+        errorMessageSummary.textContent = message.error || (message.payload && message.payload.message) || 'Unknown error occurred';
+
+      } else if (mode === 'full') {
+        streamingStateFull.isStreaming = false;
+        streamingStateFull.text = '';
+        streamingStateFull.currentTranslation = '';
+        if (streamingStateFull.timer) {
+          clearTimeout(streamingStateFull.timer);
+          streamingStateFull.timer = null;
+        }
+
+        loadingViewFull.style.display = 'none';
+        errorViewFull.style.display = 'block';
+        errorMessageFull.textContent = message.error || (message.payload && message.payload.message) || 'Unknown error occurred';
       }
-      
-      // Export 버튼 숨기기 (에러 상태)
-      document.getElementById('export-btn').style.display = 'none';
-      
-      loadingView.style.display = 'none';
-      errorView.style.display = 'block';
-      errorMessage.textContent = message.error || (message.payload && message.payload.message) || 'Unknown error occurred';
-      
+
     } else if (message.type === 'EXPORT_SUCCESS') {
       showToast(message.message, 'success');
-      
+
     } else if (message.type === 'EXPORT_ERROR') {
       showToast('Export 오류: ' + message.error, 'error');
     }

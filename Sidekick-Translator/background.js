@@ -294,14 +294,19 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (message.type === 'ANALYZE_TEXT') {
     (async () => {
       const tabUrl = sender.tab.url;
-      const cacheKey = `cachedResult-${tabId}-${tabUrl}`;
-      console.log(`[background.js] Received ${message.type} for tab ${tabId}. URL: ${tabUrl}`);
+      const mode = message.mode || 'summary'; // 'summary' or 'full'
+      const cacheKey = `cachedResult-${tabId}-${tabUrl}-${mode}`;
+      console.log(`[background.js] Received ${message.type} for tab ${tabId}. URL: ${tabUrl}, Mode: ${mode}`);
 
       try {
         const cached = await chrome.storage.local.get([cacheKey]);
         if (!message.force && cached[cacheKey]) {
           console.log('[background.js] Serving from cache:', cacheKey);
-          chrome.tabs.sendMessage(tabId, { type: 'DISPLAY_RESULTS', payload: cached[cacheKey] });
+          chrome.tabs.sendMessage(tabId, {
+            type: 'DISPLAY_RESULTS',
+            payload: cached[cacheKey],
+            mode: mode
+          });
           return;
         }
 
@@ -324,21 +329,36 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         // 모델별 최적 청크 크기 선택
         const CHUNK_SIZE = MODEL_CHUNK_SIZES[provider] || 10000;
 
-        // 스마트 청킹: 의미 단위로 분할
-        const textChunks = smartChunkText(message.text, CHUNK_SIZE);
+        // Mode에 따라 다른 처리
+        if (mode === 'summary') {
+          // 요약 모드: 첫 청크만 또는 전체를 요약
+          const summaryText = message.text.length > CHUNK_SIZE * 2
+            ? message.text.substring(0, CHUNK_SIZE * 2) // 긴 문서는 앞부분만
+            : message.text;
 
-        console.log(`[background.js] Original text length: ${message.text.length}`);
-        console.log(`[background.js] Split into ${textChunks.length} chunks using ${provider} model (chunk size: ${CHUNK_SIZE})`);
+          await processSummaryMode(summaryText, tabId, apiKey, provider, cacheKey, mode);
 
-        if (textChunks.length === 1) {
-          await processSingleChunk(textChunks[0], tabId, apiKey, provider, cacheKey);
         } else {
-          await processMultipleChunks(textChunks, tabId, apiKey, provider, cacheKey);
+          // Full 모드: 기존 방식대로 전체 번역
+          const textChunks = smartChunkText(message.text, CHUNK_SIZE);
+
+          console.log(`[background.js] Original text length: ${message.text.length}`);
+          console.log(`[background.js] Split into ${textChunks.length} chunks using ${provider} model (chunk size: ${CHUNK_SIZE})`);
+
+          if (textChunks.length === 1) {
+            await processSingleChunk(textChunks[0], tabId, apiKey, provider, cacheKey, mode);
+          } else {
+            await processMultipleChunks(textChunks, tabId, apiKey, provider, cacheKey, mode);
+          }
         }
 
       } catch (error) {
         console.error('[background.js] Error in ANALYZE_TEXT:', error);
-        chrome.tabs.sendMessage(tabId, { type: 'ANALYSIS_ERROR', error: error.message });
+        chrome.tabs.sendMessage(tabId, {
+          type: 'ANALYSIS_ERROR',
+          error: error.message,
+          mode: mode
+        });
       }
     })();
     
@@ -347,10 +367,93 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   }
 });
 
+// 요약 모드 처리 함수 (빠른 요약 생성)
+async function processSummaryMode(text, tabId, apiKey, provider, cacheKey, mode) {
+  console.log('[background.js] Starting summary mode processing...');
+  chrome.tabs.sendMessage(tabId, { type: 'STREAMING_START', mode: mode });
+
+  let result = null;
+  let lastError = null;
+
+  // 재시도 루프
+  for (let attempt = 0; attempt <= MAX_RETRY_ATTEMPTS; attempt++) {
+    try {
+      const isRetry = attempt > 0;
+      const summaryPrompt = `당신은 전문 요약가입니다. 아래 텍스트를 분석하여 한국어로 간단히 요약하세요.
+
+**응답 형식 (JSON만):**
+{
+  "summary": "핵심 내용을 3-5개 글머리 기호로 요약 (마크다운 형식)"
+}
+
+**주의사항:**
+- JSON 외 다른 텍스트 포함 금지
+- 반드시 완전한 JSON 형식으로 응답하세요 (중괄호, 따옴표 누락 금지)
+- 핵심 내용만 간결하게 요약
+${isRetry ? '\n⚠️ 이전 시도에서 불완전한 응답을 받았습니다. 완전한 JSON을 생성해주세요.\n' : ''}
+**텍스트:**
+
+${text}`;
+
+      // API 제공자에 따라 다른 처리
+      if (provider === 'gemini') {
+        result = await processGeminiSingleChunk(summaryPrompt, apiKey, tabId, mode);
+      } else if (provider === 'openai') {
+        result = await processOpenAISingleChunk(summaryPrompt, apiKey, tabId, mode);
+      } else if (provider === 'claude') {
+        result = await processClaudeSingleChunk(summaryPrompt, apiKey, tabId, mode);
+      } else if (provider === 'grok') {
+        result = await processGrokSingleChunk(summaryPrompt, apiKey, tabId, mode);
+      }
+
+      // 결과 검증 (완화된 조건)
+      if (!isIncompleteResult(result, 'summary')) {
+        console.log(`[background.js] Summary processed successfully on attempt ${attempt + 1}`);
+        break; // 성공
+      } else {
+        console.warn(`[background.js] Incomplete summary on attempt ${attempt + 1}, length: ${result?.summary?.length || 0}`);
+
+        if (attempt < MAX_RETRY_ATTEMPTS && (!result?.summary || result.summary.length < 20)) {
+          console.log(`[background.js] Retrying summary... (${attempt + 2}/${MAX_RETRY_ATTEMPTS + 1})`);
+          await new Promise(resolve => setTimeout(resolve, RETRY_DELAY_MS));
+        } else {
+          console.warn('[background.js] Using partial summary result');
+          break;
+        }
+      }
+    } catch (error) {
+      lastError = error;
+      console.error(`[background.js] Error on attempt ${attempt + 1}:`, error);
+
+      if (attempt < MAX_RETRY_ATTEMPTS) {
+        console.log(`[background.js] Retrying after error... (${attempt + 2}/${MAX_RETRY_ATTEMPTS + 1})`);
+        await new Promise(resolve => setTimeout(resolve, RETRY_DELAY_MS));
+      } else {
+        throw error;
+      }
+    }
+  }
+
+  chrome.tabs.sendMessage(tabId, { type: 'STREAMING_END', mode: mode });
+
+  if (result) {
+    // Summary 모드에서는 translated_text를 summary로 사용 (필요시)
+    const finalResult = {
+      summary: result.summary || result.translated_text,
+      translated_text: result.summary || result.translated_text
+    };
+
+    await chrome.storage.local.set({ [cacheKey]: finalResult });
+    chrome.tabs.sendMessage(tabId, { type: 'DISPLAY_RESULTS', payload: finalResult, mode: mode });
+  } else {
+    throw lastError || new Error('요약 처리 중 알 수 없는 오류가 발생했습니다.');
+  }
+}
+
 // 단일 청크 처리 함수 (재시도 로직 포함)
-async function processSingleChunk(text, tabId, apiKey, provider, cacheKey) {
+async function processSingleChunk(text, tabId, apiKey, provider, cacheKey, mode) {
   console.log('[background.js] Starting stream processing...');
-  chrome.tabs.sendMessage(tabId, { type: 'STREAMING_START' });
+  chrome.tabs.sendMessage(tabId, { type: 'STREAMING_START', mode: mode });
 
   let result = null;
   let lastError = null;
@@ -379,13 +482,13 @@ ${text}`;
 
       // API 제공자에 따라 다른 처리
       if (provider === 'gemini') {
-        result = await processGeminiSingleChunk(masterPrompt, apiKey, tabId);
+        result = await processGeminiSingleChunk(masterPrompt, apiKey, tabId, mode);
       } else if (provider === 'openai') {
-        result = await processOpenAISingleChunk(masterPrompt, apiKey, tabId);
+        result = await processOpenAISingleChunk(masterPrompt, apiKey, tabId, mode);
       } else if (provider === 'claude') {
-        result = await processClaudeSingleChunk(masterPrompt, apiKey, tabId);
+        result = await processClaudeSingleChunk(masterPrompt, apiKey, tabId, mode);
       } else if (provider === 'grok') {
-        result = await processGrokSingleChunk(masterPrompt, apiKey, tabId);
+        result = await processGrokSingleChunk(masterPrompt, apiKey, tabId, mode);
       }
 
       // 결과 검증 (완화된 조건)
@@ -418,19 +521,19 @@ ${text}`;
     }
   }
 
-  chrome.tabs.sendMessage(tabId, { type: 'STREAMING_END' });
+  chrome.tabs.sendMessage(tabId, { type: 'STREAMING_END', mode: mode });
 
   // 결과가 있으면 저장하고 표시
   if (result) {
     await chrome.storage.local.set({ [cacheKey]: result });
-    chrome.tabs.sendMessage(tabId, { type: 'DISPLAY_RESULTS', payload: result });
+    chrome.tabs.sendMessage(tabId, { type: 'DISPLAY_RESULTS', payload: result, mode: mode });
   } else {
     throw lastError || new Error('번역 처리 중 알 수 없는 오류가 발생했습니다.');
   }
 }
 
 // 여러 청크 처리 함수 - 계층적 요약 방식
-async function processMultipleChunks(textChunks, tabId, apiKey, provider, cacheKey) {
+async function processMultipleChunks(textChunks, tabId, apiKey, provider, cacheKey, mode) {
   console.log(`[background.js] Processing ${textChunks.length} chunks with hierarchical summarization`);
 
   const chunkPrompt = (chunkIndex, totalChunks, chunkText, isRetry = false) => `청크 ${chunkIndex + 1}/${totalChunks}을 번역하고 핵심 포인트를 추출하세요.
@@ -451,8 +554,8 @@ ${isRetry ? '⚠️ 이전 시도에서 불완전한 응답을 받았습니다. 
 ${chunkText}`;
 
   const chunkResults = [];
-  
-  chrome.tabs.sendMessage(tabId, { type: 'STREAMING_START' });
+
+  chrome.tabs.sendMessage(tabId, { type: 'STREAMING_START', mode: mode });
   
   for (let i = 0; i < textChunks.length; i++) {
     console.log(`[background.js] Processing chunk ${i + 1}/${textChunks.length}`);
@@ -506,7 +609,8 @@ ${chunkText}`;
           current: i + 1,
           total: textChunks.length,
           text: chunkResult.translated_text
-        }
+        },
+        mode: mode
       });
     } else {
       throw lastError || new Error(`청크 ${i + 1} 처리 실패`);
@@ -583,8 +687,8 @@ ${allKeyPoints}`;
   };
 
   await chrome.storage.local.set({ [cacheKey]: combinedResult });
-  chrome.tabs.sendMessage(tabId, { type: 'STREAMING_END' });
-  chrome.tabs.sendMessage(tabId, { type: 'DISPLAY_RESULTS', payload: combinedResult });
+  chrome.tabs.sendMessage(tabId, { type: 'STREAMING_END', mode: mode });
+  chrome.tabs.sendMessage(tabId, { type: 'DISPLAY_RESULTS', payload: combinedResult, mode: mode });
 }
 
 // 개별 청크 API 호출 함수
@@ -768,7 +872,7 @@ ${payload.translation}
 // ===== API 제공자별 스트리밍 처리 함수 =====
 
 // Gemini 스트리밍 처리
-async function processGeminiSingleChunk(prompt, apiKey, tabId) {
+async function processGeminiSingleChunk(prompt, apiKey, tabId, mode) {
   const requestBody = {
     contents: [{
       parts: [{ text: prompt }]
@@ -815,7 +919,8 @@ async function processGeminiSingleChunk(prompt, apiKey, tabId) {
 
               chrome.tabs.sendMessage(tabId, {
                 type: 'DISPLAY_STREAM_CHUNK',
-                payload: { text: newText }
+                payload: { text: newText },
+                mode: mode
               });
 
               await new Promise(resolve => setTimeout(resolve, STREAMING_DELAY_MS));
@@ -835,7 +940,7 @@ async function processGeminiSingleChunk(prompt, apiKey, tabId) {
 }
 
 // OpenAI 스트리밍 처리
-async function processOpenAISingleChunk(prompt, apiKey, tabId) {
+async function processOpenAISingleChunk(prompt, apiKey, tabId, mode) {
   const requestBody = {
     model: 'gpt-4o-mini',
     messages: [{ role: 'user', content: prompt }],
@@ -882,7 +987,8 @@ async function processOpenAISingleChunk(prompt, apiKey, tabId) {
 
           chrome.tabs.sendMessage(tabId, {
             type: 'DISPLAY_STREAM_CHUNK',
-            payload: { text: content }
+            payload: { text: content },
+            mode: mode
           });
 
           await new Promise(resolve => setTimeout(resolve, STREAMING_DELAY_MS));
@@ -898,7 +1004,7 @@ async function processOpenAISingleChunk(prompt, apiKey, tabId) {
 }
 
 // Claude 스트리밍 처리
-async function processClaudeSingleChunk(prompt, apiKey, tabId) {
+async function processClaudeSingleChunk(prompt, apiKey, tabId, mode) {
   const requestBody = {
     model: 'claude-3-5-sonnet-20241022',
     max_tokens: 8192,
@@ -945,7 +1051,8 @@ async function processClaudeSingleChunk(prompt, apiKey, tabId) {
 
           chrome.tabs.sendMessage(tabId, {
             type: 'DISPLAY_STREAM_CHUNK',
-            payload: { text: content }
+            payload: { text: content },
+            mode: mode
           });
 
           await new Promise(resolve => setTimeout(resolve, STREAMING_DELAY_MS));
@@ -961,7 +1068,7 @@ async function processClaudeSingleChunk(prompt, apiKey, tabId) {
 }
 
 // Grok 스트리밍 처리 (OpenAI 호환)
-async function processGrokSingleChunk(prompt, apiKey, tabId) {
+async function processGrokSingleChunk(prompt, apiKey, tabId, mode) {
   const requestBody = {
     model: 'grok-beta',
     messages: [{ role: 'user', content: prompt }],
@@ -1008,7 +1115,8 @@ async function processGrokSingleChunk(prompt, apiKey, tabId) {
 
           chrome.tabs.sendMessage(tabId, {
             type: 'DISPLAY_STREAM_CHUNK',
-            payload: { text: content }
+            payload: { text: content },
+            mode: mode
           });
 
           await new Promise(resolve => setTimeout(resolve, STREAMING_DELAY_MS));
