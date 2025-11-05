@@ -9,11 +9,165 @@ const MODEL_CHUNK_SIZES = {
 };
 const CHUNK_BOUNDARY_THRESHOLD = 0.85;  // 경계 찾기 임계값 증가
 const STREAMING_DELAY_MS = 10;
+const MAX_RETRY_ATTEMPTS = 2;  // 부분 완성 시 재시도 횟수
 const RATE_LIMIT_ERROR_MESSAGE = `🚫 API 사용량 제한에 도달했습니다
 
 API의 무료 할당량을 모두 사용했습니다.
 • 일일 할당량이 재설정될 때까지 기다려주세요
 • 또는 유료 플랜을 확인해보세요`;
+
+// ===== Robust JSON Parsing System =====
+
+/**
+ * Robust JSON 파싱 - 실패 시 여러 복구 전략 시도
+ * @param {string} textContent - 파싱할 텍스트
+ * @param {string} fallbackType - 'full' | 'summary' | 'chunk'
+ * @returns {Object} 파싱된 객체
+ */
+function robustJsonParse(textContent, fallbackType = 'full') {
+  try {
+    // 1차: 정상 JSON 파싱
+    const jsonMatch = textContent.match(/```json\s*\n?([\s\S]*?)(?:\n?```|$)/);
+    const jsonContent = jsonMatch ? jsonMatch[1] : textContent;
+    return JSON.parse(jsonContent.trim());
+  } catch (parseError) {
+    console.warn('[robustJsonParse] Primary parsing failed, attempting recovery:', parseError.message);
+
+    try {
+      // 2차: JSON 복구 시도 (불완전한 끝부분 처리)
+      const repairedJson = attemptJsonRepair(textContent);
+      if (repairedJson) {
+        console.log('[robustJsonParse] Successfully repaired JSON');
+        return repairedJson;
+      }
+    } catch (repairError) {
+      console.warn('[robustJsonParse] Repair failed, extracting fields:', repairError.message);
+    }
+
+    // 3차: 필드별 추출 (정규표현식)
+    const extracted = extractFieldsFromText(textContent, fallbackType);
+    console.log('[robustJsonParse] Field extraction result:', Object.keys(extracted));
+    return extracted;
+  }
+}
+
+/**
+ * 불완전한 JSON 복구 시도
+ * @param {string} text - 복구할 텍스트
+ * @returns {Object|null} 복구된 JSON 객체 또는 null
+ */
+function attemptJsonRepair(text) {
+  // JSON 블록 추출
+  const jsonMatch = text.match(/```json\s*\n?([\s\S]*?)(?:\n?```|$)/);
+  let jsonText = (jsonMatch ? jsonMatch[1] : text).trim();
+
+  // 빈 텍스트 체크
+  if (!jsonText) return null;
+
+  // 불완전한 문자열 닫기 시도
+  const openBraces = (jsonText.match(/{/g) || []).length;
+  const closeBraces = (jsonText.match(/}/g) || []).length;
+  const openQuotes = (jsonText.match(/"/g) || []).length;
+
+  // 괄호가 맞지 않으면 닫기
+  if (openBraces > closeBraces) {
+    // 홀수개의 따옴표가 있으면 하나 추가
+    if (openQuotes % 2 === 1) {
+      jsonText += '"';
+    }
+    // 열린 괄호만큼 닫기
+    jsonText += '}'.repeat(openBraces - closeBraces);
+  }
+
+  // 마지막 불완전한 필드 제거 시도
+  // 예: "field": "incomplete... 형태를 제거
+  jsonText = jsonText.replace(/,\s*"[^"]*":\s*"[^"]*$/s, '');
+  jsonText = jsonText.trim();
+
+  // 마지막 쉼표 제거
+  jsonText = jsonText.replace(/,(\s*[}\]])/, '$1');
+
+  try {
+    return JSON.parse(jsonText);
+  } catch (e) {
+    return null;
+  }
+}
+
+/**
+ * 텍스트에서 필드를 정규표현식으로 추출
+ * @param {string} text - 추출할 텍스트
+ * @param {string} type - 'full' | 'summary' | 'chunk'
+ * @returns {Object} 추출된 필드들
+ */
+function extractFieldsFromText(text, type) {
+  // 이스케이프 해제 함수
+  const unescape = (str) => str
+    .replace(/\\n/g, '\n')
+    .replace(/\\"/g, '"')
+    .replace(/\\t/g, '\t')
+    .replace(/\\\\/g, '\\');
+
+  // 필드 추출 (다양한 패턴 시도)
+  const summaryMatch = text.match(/"summary":\s*"([^"]*(?:\\.[^"]*)*)"/s) ||
+                       text.match(/"summary":\s*'([^']*(?:\\.[^']*)*)'/s);
+  const translatedMatch = text.match(/"translated_text":\s*"([^"]*(?:\\.[^"]*)*)"/s) ||
+                          text.match(/"translated_text":\s*'([^']*(?:\\.[^']*)*)'/s);
+  const keyPointsMatch = text.match(/"key_points":\s*"([^"]*(?:\\.[^"]*)*)"/s) ||
+                         text.match(/"key_points":\s*'([^']*(?:\\.[^']*)*)'/s);
+  const chunkIndexMatch = text.match(/"chunk_index":\s*(\d+)/);
+
+  if (type === 'summary') {
+    return {
+      summary: summaryMatch ? unescape(summaryMatch[1]) :
+               text.replace(/```json|```|{|}|"summary":|"translated_text":/g, '').trim() ||
+               '⚠️ 요약을 완전히 생성하지 못했습니다. 아래 전체 번역을 참고해주세요.'
+    };
+  } else if (type === 'chunk') {
+    return {
+      chunk_index: chunkIndexMatch ? parseInt(chunkIndexMatch[1]) : 0,
+      translated_text: translatedMatch ? unescape(translatedMatch[1]) :
+                       text.replace(/```json|```|{|}|"[^"]*":/g, '').trim() ||
+                       '⚠️ 이 부분의 번역이 불완전합니다.',
+      key_points: keyPointsMatch ? unescape(keyPointsMatch[1]) : ''
+    };
+  } else {
+    // type === 'full'
+    return {
+      summary: summaryMatch ? unescape(summaryMatch[1]) :
+               '⚠️ 요약을 완전히 생성하지 못했습니다. 아래 전체 번역을 참고해주세요.',
+      translated_text: translatedMatch ? unescape(translatedMatch[1]) :
+                       text.replace(/```json|```|{|}|"summary":|"translated_text":|"key_points":/g, '').trim() ||
+                       text.trim() ||
+                       '⚠️ 번역이 불완전합니다.'
+    };
+  }
+}
+
+/**
+ * 결과가 불완전한지 검사
+ * @param {Object} result - 검사할 결과 객체
+ * @param {string} type - 'full' | 'summary' | 'chunk'
+ * @returns {boolean} 불완전하면 true
+ */
+function isIncompleteResult(result, type) {
+  if (!result) return true;
+
+  if (type === 'summary') {
+    return !result.summary ||
+           result.summary.includes('⚠️') ||
+           result.summary.length < 10;
+  } else if (type === 'chunk') {
+    return !result.translated_text ||
+           result.translated_text.includes('⚠️') ||
+           result.translated_text.length < 10;
+  } else {
+    return !result.summary || !result.translated_text ||
+           result.summary.includes('⚠️') ||
+           result.translated_text.includes('⚠️') ||
+           (result.summary.length < 10 && result.translated_text.length < 10);
+  }
+}
 
 // Helper function to handle API rate limit errors
 function handleApiError(response, errorData) {
@@ -192,9 +346,19 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   }
 });
 
-// 단일 청크 처리 함수
+// 단일 청크 처리 함수 (재시도 로직 포함)
 async function processSingleChunk(text, tabId, apiKey, provider, cacheKey) {
-  const masterPrompt = `당신은 전문 번역가입니다. 아래 텍스트를 분석하여 JSON 형식으로 응답하세요.
+  console.log('[background.js] Starting stream processing...');
+  chrome.tabs.sendMessage(tabId, { type: 'STREAMING_START' });
+
+  let result = null;
+  let lastError = null;
+
+  // 재시도 루프
+  for (let attempt = 0; attempt <= MAX_RETRY_ATTEMPTS; attempt++) {
+    try {
+      const isRetry = attempt > 0;
+      const masterPrompt = `당신은 전문 번역가입니다. 아래 텍스트를 분석하여 JSON 형식으로 응답하세요.
 
 **응답 형식 (JSON만):**
 {
@@ -204,39 +368,70 @@ async function processSingleChunk(text, tabId, apiKey, provider, cacheKey) {
 
 **주의사항:**
 - JSON 외 다른 텍스트 포함 금지
+- 반드시 완전한 JSON 형식으로 응답하세요 (중괄호, 따옴표 누락 금지)
 - 텍스트가 너무 짧으면 summary에 "요약하기에는 텍스트가 너무 짧습니다." 반환
 - 분석 불가능한 내용이면 두 필드 모두 "분석할 수 없는 콘텐츠입니다." 반환
-
+${isRetry ? '\n⚠️ 이전 시도에서 불완전한 응답을 받았습니다. 완전한 JSON을 생성해주세요.\n' : ''}
 **텍스트:**
 
 ${text}`;
 
-  console.log('[background.js] Starting stream processing...');
-  chrome.tabs.sendMessage(tabId, { type: 'STREAMING_START' });
+      // API 제공자에 따라 다른 처리
+      if (provider === 'gemini') {
+        result = await processGeminiSingleChunk(masterPrompt, apiKey, tabId);
+      } else if (provider === 'openai') {
+        result = await processOpenAISingleChunk(masterPrompt, apiKey, tabId);
+      } else if (provider === 'claude') {
+        result = await processClaudeSingleChunk(masterPrompt, apiKey, tabId);
+      } else if (provider === 'grok') {
+        result = await processGrokSingleChunk(masterPrompt, apiKey, tabId);
+      }
 
-  let result;
+      // 결과 검증
+      if (!isIncompleteResult(result, 'full')) {
+        console.log(`[background.js] Successfully processed on attempt ${attempt + 1}`);
+        break; // 성공
+      } else {
+        console.warn(`[background.js] Incomplete result on attempt ${attempt + 1}:`, result);
 
-  // API 제공자에 따라 다른 처리
-  if (provider === 'gemini') {
-    result = await processGeminiSingleChunk(masterPrompt, apiKey, tabId);
-  } else if (provider === 'openai') {
-    result = await processOpenAISingleChunk(masterPrompt, apiKey, tabId);
-  } else if (provider === 'claude') {
-    result = await processClaudeSingleChunk(masterPrompt, apiKey, tabId);
-  } else if (provider === 'grok') {
-    result = await processGrokSingleChunk(masterPrompt, apiKey, tabId);
+        // 마지막 시도가 아니면 재시도
+        if (attempt < MAX_RETRY_ATTEMPTS) {
+          console.log(`[background.js] Retrying... (${attempt + 2}/${MAX_RETRY_ATTEMPTS + 1})`);
+          await new Promise(resolve => setTimeout(resolve, 1000)); // 1초 대기
+        } else {
+          console.warn('[background.js] Max retry attempts reached, using partial result');
+        }
+      }
+    } catch (error) {
+      lastError = error;
+      console.error(`[background.js] Error on attempt ${attempt + 1}:`, error);
+
+      // 마지막 시도가 아니면 재시도
+      if (attempt < MAX_RETRY_ATTEMPTS) {
+        console.log(`[background.js] Retrying after error... (${attempt + 2}/${MAX_RETRY_ATTEMPTS + 1})`);
+        await new Promise(resolve => setTimeout(resolve, 1000));
+      } else {
+        throw error; // 마지막 시도에서도 실패하면 에러 throw
+      }
+    }
   }
 
   chrome.tabs.sendMessage(tabId, { type: 'STREAMING_END' });
-  await chrome.storage.local.set({ [cacheKey]: result });
-  chrome.tabs.sendMessage(tabId, { type: 'DISPLAY_RESULTS', payload: result });
+
+  // 결과가 있으면 저장하고 표시
+  if (result) {
+    await chrome.storage.local.set({ [cacheKey]: result });
+    chrome.tabs.sendMessage(tabId, { type: 'DISPLAY_RESULTS', payload: result });
+  } else {
+    throw lastError || new Error('번역 처리 중 알 수 없는 오류가 발생했습니다.');
+  }
 }
 
 // 여러 청크 처리 함수 - 계층적 요약 방식
 async function processMultipleChunks(textChunks, tabId, apiKey, provider, cacheKey) {
   console.log(`[background.js] Processing ${textChunks.length} chunks with hierarchical summarization`);
 
-  const chunkPrompt = (chunkIndex, totalChunks, chunkText) => `청크 ${chunkIndex + 1}/${totalChunks}을 번역하고 핵심 포인트를 추출하세요.
+  const chunkPrompt = (chunkIndex, totalChunks, chunkText, isRetry = false) => `청크 ${chunkIndex + 1}/${totalChunks}을 번역하고 핵심 포인트를 추출하세요.
 
 **응답 형식 (JSON만):**
 {
@@ -245,6 +440,10 @@ async function processMultipleChunks(textChunks, tabId, apiKey, provider, cacheK
   "key_points": "이 부분의 핵심 내용 2-3줄 요약"
 }
 
+**주의사항:**
+- JSON 외 다른 텍스트 포함 금지
+- 반드시 완전한 JSON 형식으로 응답하세요 (중괄호, 따옴표 누락 금지)
+${isRetry ? '⚠️ 이전 시도에서 불완전한 응답을 받았습니다. 완전한 JSON을 생성해주세요.\n' : ''}
 **텍스트:**
 
 ${chunkText}`;
@@ -255,25 +454,58 @@ ${chunkText}`;
   
   for (let i = 0; i < textChunks.length; i++) {
     console.log(`[background.js] Processing chunk ${i + 1}/${textChunks.length}`);
-    
-    const prompt = chunkPrompt(i, textChunks.length, textChunks[i]);
-    
-    try {
-      const chunkResult = await processChunkWithAPI(prompt, apiKey, provider, tabId, i);
+
+    let chunkResult = null;
+    let lastError = null;
+
+    // 각 청크별 재시도 루프
+    for (let attempt = 0; attempt <= MAX_RETRY_ATTEMPTS; attempt++) {
+      try {
+        const isRetry = attempt > 0;
+        const prompt = chunkPrompt(i, textChunks.length, textChunks[i], isRetry);
+
+        chunkResult = await processChunkWithAPI(prompt, apiKey, provider, tabId, i);
+
+        // 결과 검증
+        if (!isIncompleteResult(chunkResult, 'chunk')) {
+          console.log(`[background.js] Chunk ${i + 1} processed successfully on attempt ${attempt + 1}`);
+          break; // 성공
+        } else {
+          console.warn(`[background.js] Chunk ${i + 1} incomplete on attempt ${attempt + 1}`);
+
+          if (attempt < MAX_RETRY_ATTEMPTS) {
+            console.log(`[background.js] Retrying chunk ${i + 1}... (${attempt + 2}/${MAX_RETRY_ATTEMPTS + 1})`);
+            await new Promise(resolve => setTimeout(resolve, 1000));
+          } else {
+            console.warn(`[background.js] Max retries for chunk ${i + 1}, using partial result`);
+          }
+        }
+      } catch (error) {
+        lastError = error;
+        console.error(`[background.js] Error processing chunk ${i + 1} on attempt ${attempt + 1}:`, error);
+
+        if (attempt < MAX_RETRY_ATTEMPTS) {
+          console.log(`[background.js] Retrying chunk ${i + 1} after error... (${attempt + 2}/${MAX_RETRY_ATTEMPTS + 1})`);
+          await new Promise(resolve => setTimeout(resolve, 1000));
+        } else {
+          throw error;
+        }
+      }
+    }
+
+    if (chunkResult) {
       chunkResults.push(chunkResult);
-      
-      chrome.tabs.sendMessage(tabId, { 
-        type: 'CHUNK_PROGRESS', 
-        payload: { 
-          current: i + 1, 
+
+      chrome.tabs.sendMessage(tabId, {
+        type: 'CHUNK_PROGRESS',
+        payload: {
+          current: i + 1,
           total: textChunks.length,
-          text: chunkResult.translated_text 
-        } 
+          text: chunkResult.translated_text
+        }
       });
-      
-    } catch (error) {
-      console.error(`[background.js] Error processing chunk ${i + 1}:`, error);
-      throw error;
+    } else {
+      throw lastError || new Error(`청크 ${i + 1} 처리 실패`);
     }
   }
   
@@ -285,43 +517,68 @@ ${chunkText}`;
 
   console.log('[background.js] Generating hierarchical summary from key points');
 
-  try {
-    // 핵심 포인트들을 종합하여 최종 요약 생성 (훨씬 짧은 입력)
-    const summaryPrompt = `다음은 긴 문서의 각 부분에서 추출한 핵심 포인트입니다. 이를 종합하여 전체 문서의 요약을 작성하세요.
+  // 최종 요약 생성 (재시도 로직 포함)
+  let summaryResult = null;
+  for (let attempt = 0; attempt <= MAX_RETRY_ATTEMPTS; attempt++) {
+    try {
+      const isRetry = attempt > 0;
+      const summaryPrompt = `다음은 긴 문서의 각 부분에서 추출한 핵심 포인트입니다. 이를 종합하여 전체 문서의 요약을 작성하세요.
 
 **응답 형식 (JSON만):**
 {
   "summary": "3-5개 글머리 기호로 전체 문서 요약 (마크다운 형식)"
 }
 
+**주의사항:**
+- JSON 외 다른 텍스트 포함 금지
+- 반드시 완전한 JSON 형식으로 응답하세요 (중괄호, 따옴표 누락 금지)
+${isRetry ? '⚠️ 이전 시도에서 불완전한 응답을 받았습니다. 완전한 JSON을 생성해주세요.\n' : ''}
 **핵심 포인트들:**
 
 ${allKeyPoints}`;
 
-    const summaryResult = await processChunkWithAPI(summaryPrompt, apiKey, provider, tabId, -1);
+      summaryResult = await processChunkWithAPI(summaryPrompt, apiKey, provider, tabId, -1);
 
-    const combinedResult = {
-      summary: summaryResult.summary || `이 문서는 ${textChunks.length}개 섹션으로 구성되어 있습니다.\n\n${allKeyPoints}`,
-      translated_text: fullTranslatedText
-    };
+      // 결과 검증
+      if (!isIncompleteResult(summaryResult, 'summary')) {
+        console.log(`[background.js] Summary generated successfully on attempt ${attempt + 1}`);
+        break;
+      } else {
+        console.warn(`[background.js] Summary incomplete on attempt ${attempt + 1}`);
 
-    await chrome.storage.local.set({ [cacheKey]: combinedResult });
-    chrome.tabs.sendMessage(tabId, { type: 'STREAMING_END' });
-    chrome.tabs.sendMessage(tabId, { type: 'DISPLAY_RESULTS', payload: combinedResult });
+        if (attempt < MAX_RETRY_ATTEMPTS) {
+          console.log(`[background.js] Retrying summary generation... (${attempt + 2}/${MAX_RETRY_ATTEMPTS + 1})`);
+          await new Promise(resolve => setTimeout(resolve, 1000));
+        } else {
+          console.warn('[background.js] Max retries for summary, using partial result');
+        }
+      }
+    } catch (summaryError) {
+      console.error(`[background.js] Error generating summary on attempt ${attempt + 1}:`, summaryError);
 
-  } catch (summaryError) {
-    console.error('[background.js] Error generating summary:', summaryError);
-
-    // 요약 생성 실패 시 key_points를 직접 사용
-    const combinedResult = {
-      summary: allKeyPoints || `이 문서는 ${textChunks.length}개 섹션으로 나뉘어 번역되었습니다.`,
-      translated_text: fullTranslatedText
-    };
-
-    await chrome.storage.local.set({ [cacheKey]: combinedResult });
-    chrome.tabs.sendMessage(tabId, { type: 'STREAMING_END' });
-    chrome.tabs.sendMessage(tabId, { type: 'DISPLAY_RESULTS', payload: combinedResult });
+      if (attempt < MAX_RETRY_ATTEMPTS) {
+        console.log(`[background.js] Retrying summary after error... (${attempt + 2}/${MAX_RETRY_ATTEMPTS + 1})`);
+        await new Promise(resolve => setTimeout(resolve, 1000));
+      } else {
+        // 마지막 시도에서도 실패하면 key_points를 직접 사용
+        console.warn('[background.js] Summary generation failed, using key points as fallback');
+        summaryResult = {
+          summary: allKeyPoints || `이 문서는 ${textChunks.length}개 섹션으로 나뉘어 번역되었습니다.`
+        };
+        break;
+      }
+    }
   }
+
+  // 최종 결과 조합
+  const combinedResult = {
+    summary: summaryResult?.summary || allKeyPoints || `이 문서는 ${textChunks.length}개 섹션으로 구성되어 있습니다.`,
+    translated_text: fullTranslatedText
+  };
+
+  await chrome.storage.local.set({ [cacheKey]: combinedResult });
+  chrome.tabs.sendMessage(tabId, { type: 'STREAMING_END' });
+  chrome.tabs.sendMessage(tabId, { type: 'DISPLAY_RESULTS', payload: combinedResult });
 }
 
 // 개별 청크 API 호출 함수
@@ -417,82 +674,16 @@ async function processChunkWithAPI(prompt, apiKey, provider, tabId, chunkIndex) 
     textContent = data.content[0].text;
   }
   
-  try {
-    // JSON 블록 추출 시도
-    const jsonMatch = textContent.match(/```json\s*\n?([\s\S]*?)(?:\n?```|$)/);
-    const jsonContent = jsonMatch ? jsonMatch[1] : textContent;
+  // Robust JSON 파싱 사용
+  const fallbackType = chunkIndex === -1 ? 'summary' : 'chunk';
+  const result = robustJsonParse(textContent, fallbackType);
 
-    // JSON 파싱 시도
-    let result;
-    try {
-      result = JSON.parse(jsonContent.trim());
-    } catch (parseError) {
-      // JSON 파싱 실패 시 텍스트에서 직접 추출 시도
-      console.warn(`[background.js] JSON parsing failed for chunk ${chunkIndex}, attempting text extraction:`, parseError);
-
-      // 요약 생성용인지 번역용인지 구분하여 처리
-      if (chunkIndex === -1) {
-        // 요약 생성용
-        const summaryMatch = textContent.match(/"summary":\s*"([^"]*(?:\\.[^"]*)*)"/s);
-
-        if (summaryMatch) {
-          const extractedSummary = summaryMatch[1]
-            .replace(/\\n/g, '\n')
-            .replace(/\\"/g, '"')
-            .replace(/\\t/g, '\t')
-            .replace(/\\\\/g, '\\');
-
-          result = {
-            summary: extractedSummary
-          };
-          console.log(`[background.js] Successfully extracted summary`);
-        } else {
-          result = {
-            summary: textContent.replace(/```json|```/g, '').trim()
-          };
-          console.log(`[background.js] Used full text as summary fallback`);
-        }
-      } else {
-        // 번역용 (key_points도 추출)
-        const translatedTextMatch = textContent.match(/"translated_text":\s*"([^"]*(?:\\.[^"]*)*)"/s);
-        const keyPointsMatch = textContent.match(/"key_points":\s*"([^"]*(?:\\.[^"]*)*)"/s);
-
-        if (translatedTextMatch) {
-          const extractedText = translatedTextMatch[1]
-            .replace(/\\n/g, '\n')
-            .replace(/\\"/g, '"')
-            .replace(/\\t/g, '\t')
-            .replace(/\\\\/g, '\\');
-
-          const extractedKeyPoints = keyPointsMatch ? keyPointsMatch[1]
-            .replace(/\\n/g, '\n')
-            .replace(/\\"/g, '"')
-            .replace(/\\t/g, '\t')
-            .replace(/\\\\/g, '\\') : '';
-
-          result = {
-            chunk_index: chunkIndex,
-            translated_text: extractedText,
-            key_points: extractedKeyPoints
-          };
-          console.log(`[background.js] Successfully extracted text and key points from chunk ${chunkIndex}`);
-        } else {
-          // 마지막 수단: 전체 텍스트를 번역 결과로 사용
-          result = {
-            chunk_index: chunkIndex,
-            translated_text: textContent.replace(/```json|```/g, '').trim(),
-            key_points: ''
-          };
-          console.log(`[background.js] Used full text as fallback for chunk ${chunkIndex}`);
-        }
-      }
-    }
-
-    return result;
-  } catch (jsonError) {
-    console.error(`[background.js] JSON parsing error for chunk ${chunkIndex}:`, jsonError);
-    throw new Error(`청크 ${chunkIndex + 1} 처리 오류: ${jsonError.message}`);
+  // chunk_index 추가 (chunk인 경우)
+  if (chunkIndex >= 0 && !result.chunk_index) {
+    result.chunk_index = chunkIndex;
   }
+
+  return result;
 }
 
 // 파일 export 처리 함수
@@ -633,10 +824,8 @@ async function processGeminiSingleChunk(prompt, apiKey, tabId) {
     }
   }
 
-  // 최종 결과 파싱
-  const jsonMatch = accumulatedTextContent.match(/```json\s*\n?([\s\S]*?)(?:\n?```|$)/);
-  const jsonContent = jsonMatch ? jsonMatch[1] : accumulatedTextContent;
-  return JSON.parse(jsonContent);
+  // 최종 결과 파싱 (Robust)
+  return robustJsonParse(accumulatedTextContent, 'full');
 }
 
 // OpenAI 스트리밍 처리
@@ -698,10 +887,8 @@ async function processOpenAISingleChunk(prompt, apiKey, tabId) {
     }
   }
 
-  // 최종 결과 파싱
-  const jsonMatch = accumulatedTextContent.match(/```json\s*\n?([\s\S]*?)(?:\n?```|$)/);
-  const jsonContent = jsonMatch ? jsonMatch[1] : accumulatedTextContent;
-  return JSON.parse(jsonContent);
+  // 최종 결과 파싱 (Robust)
+  return robustJsonParse(accumulatedTextContent, 'full');
 }
 
 // Claude 스트리밍 처리
@@ -763,10 +950,8 @@ async function processClaudeSingleChunk(prompt, apiKey, tabId) {
     }
   }
 
-  // 최종 결과 파싱
-  const jsonMatch = accumulatedTextContent.match(/```json\s*\n?([\s\S]*?)(?:\n?```|$)/);
-  const jsonContent = jsonMatch ? jsonMatch[1] : accumulatedTextContent;
-  return JSON.parse(jsonContent);
+  // 최종 결과 파싱 (Robust)
+  return robustJsonParse(accumulatedTextContent, 'full');
 }
 
 // Grok 스트리밍 처리 (OpenAI 호환)
@@ -828,8 +1013,6 @@ async function processGrokSingleChunk(prompt, apiKey, tabId) {
     }
   }
 
-  // 최종 결과 파싱
-  const jsonMatch = accumulatedTextContent.match(/```json\s*\n?([\s\S]*?)(?:\n?```|$)/);
-  const jsonContent = jsonMatch ? jsonMatch[1] : accumulatedTextContent;
-  return JSON.parse(jsonContent);
+  // 최종 결과 파싱 (Robust)
+  return robustJsonParse(accumulatedTextContent, 'full');
 }
