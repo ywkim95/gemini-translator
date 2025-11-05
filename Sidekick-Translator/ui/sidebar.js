@@ -1,4 +1,9 @@
 document.addEventListener('DOMContentLoaded', () => {
+  // Constants
+  const TOAST_DISPLAY_DURATION_MS = 3000;
+  const TOAST_FADE_OUT_DURATION_MS = 300;
+  const FINAL_RESULT_DELAY_MS = 500;
+
   const analyzeBtn = document.getElementById('analyze-btn');
   const loadingView = document.getElementById('st-loading-state');
   const resultView = document.getElementById('st-result-state');
@@ -7,7 +12,7 @@ document.addEventListener('DOMContentLoaded', () => {
   const summaryEl = document.getElementById('st-summary');
   const translationEl = document.getElementById('st-translation');
   const converter = new showdown.Converter();
-  
+
   // Streaming state management
   let isStreaming = false;
   let streamingText = '';
@@ -33,15 +38,15 @@ document.addEventListener('DOMContentLoaded', () => {
     
     toastText.textContent = message;
     toastContainer.style.display = 'block';
-    
-    // 3초 후 자동으로 사라짐
+
+    // TOAST_DISPLAY_DURATION_MS 후 자동으로 사라짐
     setTimeout(() => {
       toastMessage.style.animation = 'toast-fade-out 0.3s ease-out';
       setTimeout(() => {
         toastContainer.style.display = 'none';
         toastMessage.style.animation = 'toast-slide-up 0.3s ease-out';
-      }, 300);
-    }, 3000);
+      }, TOAST_FADE_OUT_DURATION_MS);
+    }, TOAST_DISPLAY_DURATION_MS);
   }
 
   // Helper function to extract and display streaming content
@@ -266,7 +271,7 @@ document.addEventListener('DOMContentLoaded', () => {
       setTimeout(() => {
         summaryEl.innerHTML = converter.makeHtml(message.payload.summary);
         translationEl.innerHTML = converter.makeHtml(message.payload.translated_text);
-      }, 500);
+      }, FINAL_RESULT_DELAY_MS);
       
     } else if (message.type === 'DISPLAY_ERROR' || message.type === 'ANALYSIS_ERROR') {
       isStreaming = false;

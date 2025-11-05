@@ -1,5 +1,25 @@
 console.log('[background.js] Service worker loaded');
 
+// Constants
+const CHUNK_SIZE = 5000;
+const CHUNK_BOUNDARY_THRESHOLD = 0.8;
+const STREAMING_DELAY_MS = 10;
+const RATE_LIMIT_ERROR_MESSAGE = `🚫 API 사용량 제한에 도달했습니다
+
+Gemini API의 무료 할당량을 모두 사용했습니다.
+• 일일 할당량이 재설정될 때까지 기다려주세요
+• 또는 Google AI Studio에서 유료 플랜을 확인해보세요
+
+자세한 정보: https://ai.google.dev/gemini-api/docs/rate-limits`;
+
+// Helper function to handle API rate limit errors
+function handleApiError(response, errorData) {
+  if (response.status === 429) {
+    throw new Error(RATE_LIMIT_ERROR_MESSAGE);
+  }
+  throw new Error(`API Error: ${response.status} ${response.statusText} - ${errorData.error.message}`);
+}
+
 // 툴바 아이콘 클릭 이벤트 처리
 chrome.action.onClicked.addListener(async (tab) => {
   console.log('[background.js] Extension icon clicked for tab:', tab.id);
@@ -75,30 +95,29 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
           throw new Error('Gemini API 키가 설정되지 않았습니다. 확장 프로그램 옵션에서 설정해주세요.');
         }
 
-        // 텍스트 청킹 로직 - 5000자 단위로 분할
-        const chunkSize = 5000;
+        // 텍스트 청킹 로직 - CHUNK_SIZE 단위로 분할
         const textChunks = [];
         const originalText = message.text;
-        
+
         console.log(`[background.js] Original text length: ${originalText.length}`);
-        
-        if (originalText.length <= chunkSize) {
+
+        if (originalText.length <= CHUNK_SIZE) {
           textChunks.push(originalText);
         } else {
-          for (let i = 0; i < originalText.length; i += chunkSize) {
-            let chunk = originalText.substring(i, i + chunkSize);
-            
-            if (i + chunkSize < originalText.length) {
+          for (let i = 0; i < originalText.length; i += CHUNK_SIZE) {
+            let chunk = originalText.substring(i, i + CHUNK_SIZE);
+
+            if (i + CHUNK_SIZE < originalText.length) {
               const lastSpaceIndex = chunk.lastIndexOf(' ');
               const lastNewlineIndex = chunk.lastIndexOf('\n');
               const lastBoundary = Math.max(lastSpaceIndex, lastNewlineIndex);
-              
-              if (lastBoundary > chunkSize * 0.8) {
+
+              if (lastBoundary > CHUNK_SIZE * CHUNK_BOUNDARY_THRESHOLD) {
                 chunk = chunk.substring(0, lastBoundary + 1);
-                i = i + lastBoundary + 1 - chunkSize;
+                i = i + lastBoundary + 1 - CHUNK_SIZE;
               }
             }
-            
+
             textChunks.push(chunk);
           }
         }
@@ -160,13 +179,7 @@ ${text}`;
 
   if (!response.ok) {
     const errorData = await response.json();
-    
-    // 429 에러 (할당량 초과)에 대한 특별 처리
-    if (response.status === 429) {
-      throw new Error(`🚫 API 사용량 제한에 도달했습니다\n\nGemini API의 무료 할당량을 모두 사용했습니다.\n• 일일 할당량이 재설정될 때까지 기다려주세요\n• 또는 Google AI Studio에서 유료 플랜을 확인해보세요\n\n자세한 정보: https://ai.google.dev/gemini-api/docs/rate-limits`);
-    }
-    
-    throw new Error(`API Error: ${response.status} ${response.statusText} - ${errorData.error.message}`);
+    handleApiError(response, errorData);
   }
 
   const reader = response.body.getReader();
@@ -203,12 +216,12 @@ ${text}`;
               const newText = responseObj.candidates[0].content.parts[0].text;
               accumulatedTextContent += newText;
               
-              chrome.tabs.sendMessage(tabId, { 
-                type: 'DISPLAY_STREAM_CHUNK', 
-                payload: { text: newText } 
+              chrome.tabs.sendMessage(tabId, {
+                type: 'DISPLAY_STREAM_CHUNK',
+                payload: { text: newText }
               });
-              
-              await new Promise(resolve => setTimeout(resolve, 10));
+
+              await new Promise(resolve => setTimeout(resolve, STREAMING_DELAY_MS));
             }
           } catch (parseError) {
             continue;
@@ -353,13 +366,7 @@ async function processChunkWithAPI(prompt, geminiApiKey, tabId, chunkIndex) {
 
   if (!response.ok) {
     const errorData = await response.json();
-    
-    // 429 에러 (할당량 초과)에 대한 특별 처리
-    if (response.status === 429) {
-      throw new Error(`🚫 API 사용량 제한에 도달했습니다\n\nGemini API의 무료 할당량을 모두 사용했습니다.\n• 일일 할당량이 재설정될 때까지 기다려주세요\n• 또는 Google AI Studio에서 유료 플랜을 확인해보세요\n\n자세한 정보: https://ai.google.dev/gemini-api/docs/rate-limits`);
-    }
-    
-    throw new Error(`API Error: ${response.status} ${response.statusText} - ${errorData.error.message}`);
+    handleApiError(response, errorData);
   }
 
   const data = await response.json();
