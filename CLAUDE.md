@@ -28,6 +28,11 @@ This is a Chrome extension called "Sidekick Translator" that uses Google Gemini 
 - Sidebar width adjustment (Small/Medium/Large)
 - PDF text extraction support
 - Tab lifecycle management for cache cleanup
+- **Optimized text processing for long documents:**
+  - Adaptive chunk sizing based on AI model capabilities
+  - Semantic chunking at paragraph/sentence boundaries
+  - Hierarchical summarization for efficient processing
+  - Model-specific optimization (Gemini: 15K, OpenAI: 12K, Claude/Grok: 10K chars)
 
 ### Data Flow
 1. User clicks extension icon → `background.js` injects content script
@@ -42,9 +47,14 @@ This is a Chrome extension called "Sidekick Translator" that uses Google Gemini 
 
 ### API Integration
 - Gemini 2.0 Flash (Experimental) API with streaming responses
-- Custom prompt template in `background.js`
+- Optimized prompt templates for efficiency (concise, JSON-focused)
 - JSON response format with summary and translated_text fields
 - Supports multiple AI providers: Gemini, OpenAI, Claude, Grok
+- **Long document handling:**
+  - Smart chunking with semantic boundaries
+  - Each chunk extracts translation + key points
+  - Hierarchical summarization: aggregates key points into final summary
+  - Significantly reduces token usage vs. full-text re-summarization
 
 ## File Structure
 - `Sidekick-Translator/`: Main extension directory
