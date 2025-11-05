@@ -3,7 +3,7 @@ console.log('[background.js] Service worker loaded');
 // Constants - 모델별 최적 청크 크기
 const MODEL_CHUNK_SIZES = {
   gemini: 15000,    // Gemini 2.0 Flash는 큰 컨텍스트 처리 가능
-  openai: 12000,    // GPT-4o-mini 최적화
+  openai: 15000,    // GPT-5-nano 최적화 (272K context window)
   claude: 10000,    // Claude Sonnet 최적화
   grok: 10000       // Grok-beta 최적화
 };
@@ -736,7 +736,7 @@ async function processChunkWithAPI(prompt, apiKey, provider, tabId, chunkIndex) 
       : 'https://api.x.ai/v1/chat/completions';
 
     const requestBody = {
-      model: provider === 'openai' ? 'gpt-4o-mini' : 'grok-beta',
+      model: provider === 'openai' ? 'gpt-5-nano' : 'grok-beta',
       messages: [{ role: 'user', content: prompt }],
       temperature: 0.7
     };
@@ -951,7 +951,7 @@ async function processGeminiSingleChunk(prompt, apiKey, tabId, mode) {
 // OpenAI 스트리밍 처리
 async function processOpenAISingleChunk(prompt, apiKey, tabId, mode) {
   const requestBody = {
-    model: 'gpt-4o-mini',
+    model: 'gpt-5-nano',
     messages: [{ role: 'user', content: prompt }],
     temperature: 0.7,
     stream: true
