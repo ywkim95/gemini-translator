@@ -9,7 +9,9 @@ const MODEL_CHUNK_SIZES = {
 };
 const CHUNK_BOUNDARY_THRESHOLD = 0.85;  // 경계 찾기 임계값 증가
 const STREAMING_DELAY_MS = 10;
-const MAX_RETRY_ATTEMPTS = 2;  // 부분 완성 시 재시도 횟수
+const MAX_RETRY_ATTEMPTS = 1;  // 부분 완성 시 재시도 횟수 (총 2번 시도)
+const RETRY_DELAY_MS = 300;    // 재시도 대기 시간 (ms)
+const API_TIMEOUT_MS = 30000;  // API 타임아웃 (30초)
 const RATE_LIMIT_ERROR_MESSAGE = `🚫 API 사용량 제한에 도달했습니다
 
 API의 무료 할당량을 모두 사용했습니다.
@@ -145,7 +147,7 @@ function extractFieldsFromText(text, type) {
 }
 
 /**
- * 결과가 불완전한지 검사
+ * 결과가 불완전한지 검사 (완화된 조건)
  * @param {Object} result - 검사할 결과 객체
  * @param {string} type - 'full' | 'summary' | 'chunk'
  * @returns {boolean} 불완전하면 true
@@ -153,19 +155,18 @@ function extractFieldsFromText(text, type) {
 function isIncompleteResult(result, type) {
   if (!result) return true;
 
+  const MIN_TEXT_LENGTH = 50;  // 최소 텍스트 길이 (너무 짧으면 의미없음)
+
   if (type === 'summary') {
-    return !result.summary ||
-           result.summary.includes('⚠️') ||
-           result.summary.length < 10;
+    // 요약이 최소 길이 이상이면 OK
+    return !result.summary || result.summary.length < MIN_TEXT_LENGTH;
   } else if (type === 'chunk') {
-    return !result.translated_text ||
-           result.translated_text.includes('⚠️') ||
-           result.translated_text.length < 10;
+    // 번역 텍스트가 최소 길이 이상이면 OK (key_points는 선택적)
+    return !result.translated_text || result.translated_text.length < MIN_TEXT_LENGTH;
   } else {
-    return !result.summary || !result.translated_text ||
-           result.summary.includes('⚠️') ||
-           result.translated_text.includes('⚠️') ||
-           (result.summary.length < 10 && result.translated_text.length < 10);
+    // full: 둘 다 있어야 하지만, 최소 번역 텍스트만 충분하면 OK
+    // summary가 짧아도 translated_text가 충분하면 재시도 안함
+    return !result.translated_text || result.translated_text.length < MIN_TEXT_LENGTH;
   }
 }
 
@@ -387,19 +388,20 @@ ${text}`;
         result = await processGrokSingleChunk(masterPrompt, apiKey, tabId);
       }
 
-      // 결과 검증
+      // 결과 검증 (완화된 조건)
       if (!isIncompleteResult(result, 'full')) {
         console.log(`[background.js] Successfully processed on attempt ${attempt + 1}`);
         break; // 성공
       } else {
-        console.warn(`[background.js] Incomplete result on attempt ${attempt + 1}:`, result);
+        console.warn(`[background.js] Incomplete result on attempt ${attempt + 1}, length: ${result?.translated_text?.length || 0}`);
 
-        // 마지막 시도가 아니면 재시도
-        if (attempt < MAX_RETRY_ATTEMPTS) {
+        // 마지막 시도가 아니면서, 결과가 아예 없을 때만 재시도
+        if (attempt < MAX_RETRY_ATTEMPTS && (!result?.translated_text || result.translated_text.length < 20)) {
           console.log(`[background.js] Retrying... (${attempt + 2}/${MAX_RETRY_ATTEMPTS + 1})`);
-          await new Promise(resolve => setTimeout(resolve, 1000)); // 1초 대기
+          await new Promise(resolve => setTimeout(resolve, RETRY_DELAY_MS));
         } else {
-          console.warn('[background.js] Max retry attempts reached, using partial result');
+          console.warn('[background.js] Using partial result (sufficient content available)');
+          break; // 부분 결과 사용
         }
       }
     } catch (error) {
@@ -409,7 +411,7 @@ ${text}`;
       // 마지막 시도가 아니면 재시도
       if (attempt < MAX_RETRY_ATTEMPTS) {
         console.log(`[background.js] Retrying after error... (${attempt + 2}/${MAX_RETRY_ATTEMPTS + 1})`);
-        await new Promise(resolve => setTimeout(resolve, 1000));
+        await new Promise(resolve => setTimeout(resolve, RETRY_DELAY_MS));
       } else {
         throw error; // 마지막 시도에서도 실패하면 에러 throw
       }
@@ -466,18 +468,20 @@ ${chunkText}`;
 
         chunkResult = await processChunkWithAPI(prompt, apiKey, provider, tabId, i);
 
-        // 결과 검증
+        // 결과 검증 (완화된 조건)
         if (!isIncompleteResult(chunkResult, 'chunk')) {
           console.log(`[background.js] Chunk ${i + 1} processed successfully on attempt ${attempt + 1}`);
           break; // 성공
         } else {
-          console.warn(`[background.js] Chunk ${i + 1} incomplete on attempt ${attempt + 1}`);
+          console.warn(`[background.js] Chunk ${i + 1} incomplete, length: ${chunkResult?.translated_text?.length || 0}`);
 
-          if (attempt < MAX_RETRY_ATTEMPTS) {
+          // 매우 짧은 결과일 때만 재시도
+          if (attempt < MAX_RETRY_ATTEMPTS && (!chunkResult?.translated_text || chunkResult.translated_text.length < 20)) {
             console.log(`[background.js] Retrying chunk ${i + 1}... (${attempt + 2}/${MAX_RETRY_ATTEMPTS + 1})`);
-            await new Promise(resolve => setTimeout(resolve, 1000));
+            await new Promise(resolve => setTimeout(resolve, RETRY_DELAY_MS));
           } else {
-            console.warn(`[background.js] Max retries for chunk ${i + 1}, using partial result`);
+            console.warn(`[background.js] Using partial result for chunk ${i + 1}`);
+            break; // 부분 결과 사용
           }
         }
       } catch (error) {
@@ -486,7 +490,7 @@ ${chunkText}`;
 
         if (attempt < MAX_RETRY_ATTEMPTS) {
           console.log(`[background.js] Retrying chunk ${i + 1} after error... (${attempt + 2}/${MAX_RETRY_ATTEMPTS + 1})`);
-          await new Promise(resolve => setTimeout(resolve, 1000));
+          await new Promise(resolve => setTimeout(resolve, RETRY_DELAY_MS));
         } else {
           throw error;
         }
@@ -539,18 +543,20 @@ ${allKeyPoints}`;
 
       summaryResult = await processChunkWithAPI(summaryPrompt, apiKey, provider, tabId, -1);
 
-      // 결과 검증
+      // 결과 검증 (완화된 조건)
       if (!isIncompleteResult(summaryResult, 'summary')) {
         console.log(`[background.js] Summary generated successfully on attempt ${attempt + 1}`);
         break;
       } else {
-        console.warn(`[background.js] Summary incomplete on attempt ${attempt + 1}`);
+        console.warn(`[background.js] Summary incomplete, length: ${summaryResult?.summary?.length || 0}`);
 
-        if (attempt < MAX_RETRY_ATTEMPTS) {
+        // 매우 짧은 결과일 때만 재시도
+        if (attempt < MAX_RETRY_ATTEMPTS && (!summaryResult?.summary || summaryResult.summary.length < 20)) {
           console.log(`[background.js] Retrying summary generation... (${attempt + 2}/${MAX_RETRY_ATTEMPTS + 1})`);
-          await new Promise(resolve => setTimeout(resolve, 1000));
+          await new Promise(resolve => setTimeout(resolve, RETRY_DELAY_MS));
         } else {
-          console.warn('[background.js] Max retries for summary, using partial result');
+          console.warn('[background.js] Using partial summary result');
+          break; // 부분 결과 사용
         }
       }
     } catch (summaryError) {
@@ -558,7 +564,7 @@ ${allKeyPoints}`;
 
       if (attempt < MAX_RETRY_ATTEMPTS) {
         console.log(`[background.js] Retrying summary after error... (${attempt + 2}/${MAX_RETRY_ATTEMPTS + 1})`);
-        await new Promise(resolve => setTimeout(resolve, 1000));
+        await new Promise(resolve => setTimeout(resolve, RETRY_DELAY_MS));
       } else {
         // 마지막 시도에서도 실패하면 key_points를 직접 사용
         console.warn('[background.js] Summary generation failed, using key points as fallback');
