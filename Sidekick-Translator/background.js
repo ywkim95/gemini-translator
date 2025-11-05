@@ -31,24 +31,30 @@ function robustJsonParse(textContent, fallbackType = 'full') {
     // 1차: 정상 JSON 파싱
     const jsonMatch = textContent.match(/```json\s*\n?([\s\S]*?)(?:\n?```|$)/);
     const jsonContent = jsonMatch ? jsonMatch[1] : textContent;
-    return JSON.parse(jsonContent.trim());
+    const parsed = JSON.parse(jsonContent.trim());
+    console.log('[robustJsonParse] ✓ Primary parsing successful');
+    return parsed;
   } catch (parseError) {
-    console.warn('[robustJsonParse] Primary parsing failed, attempting recovery:', parseError.message);
+    console.warn('[robustJsonParse] Primary parsing failed:', parseError.message);
 
     try {
       // 2차: JSON 복구 시도 (불완전한 끝부분 처리)
       const repairedJson = attemptJsonRepair(textContent);
       if (repairedJson) {
-        console.log('[robustJsonParse] Successfully repaired JSON');
+        console.log('[robustJsonParse] ✓ Successfully repaired JSON');
         return repairedJson;
       }
     } catch (repairError) {
-      console.warn('[robustJsonParse] Repair failed, extracting fields:', repairError.message);
+      console.warn('[robustJsonParse] Repair failed:', repairError.message);
     }
 
     // 3차: 필드별 추출 (정규표현식)
+    console.log('[robustJsonParse] Attempting field extraction...');
     const extracted = extractFieldsFromText(textContent, fallbackType);
-    console.log('[robustJsonParse] Field extraction result:', Object.keys(extracted));
+    console.log('[robustJsonParse] ✓ Field extraction complete. Fields:', Object.keys(extracted), 'Lengths:', {
+      summary: extracted.summary?.length || 0,
+      translated_text: extracted.translated_text?.length || 0
+    });
     return extracted;
   }
 }
@@ -119,29 +125,33 @@ function extractFieldsFromText(text, type) {
                          text.match(/"key_points":\s*'([^']*(?:\\.[^']*)*)'/s);
   const chunkIndexMatch = text.match(/"chunk_index":\s*(\d+)/);
 
+  // 원본 텍스트 정리 (JSON 마크다운만 제거)
+  const cleanText = text
+    .replace(/```json/g, '')
+    .replace(/```/g, '')
+    .replace(/^\s*{\s*/, '')
+    .replace(/\s*}\s*$/, '')
+    .replace(/"summary":\s*"/g, '')
+    .replace(/"translated_text":\s*"/g, '')
+    .replace(/"key_points":\s*"/g, '')
+    .replace(/",?\s*$/g, '')
+    .trim();
+
   if (type === 'summary') {
     return {
-      summary: summaryMatch ? unescape(summaryMatch[1]) :
-               text.replace(/```json|```|{|}|"summary":|"translated_text":/g, '').trim() ||
-               '⚠️ 요약을 완전히 생성하지 못했습니다. 아래 전체 번역을 참고해주세요.'
+      summary: summaryMatch ? unescape(summaryMatch[1]) : cleanText || text.trim()
     };
   } else if (type === 'chunk') {
     return {
       chunk_index: chunkIndexMatch ? parseInt(chunkIndexMatch[1]) : 0,
-      translated_text: translatedMatch ? unescape(translatedMatch[1]) :
-                       text.replace(/```json|```|{|}|"[^"]*":/g, '').trim() ||
-                       '⚠️ 이 부분의 번역이 불완전합니다.',
+      translated_text: translatedMatch ? unescape(translatedMatch[1]) : cleanText || text.trim(),
       key_points: keyPointsMatch ? unescape(keyPointsMatch[1]) : ''
     };
   } else {
     // type === 'full'
     return {
-      summary: summaryMatch ? unescape(summaryMatch[1]) :
-               '⚠️ 요약을 완전히 생성하지 못했습니다. 아래 전체 번역을 참고해주세요.',
-      translated_text: translatedMatch ? unescape(translatedMatch[1]) :
-                       text.replace(/```json|```|{|}|"summary":|"translated_text":|"key_points":/g, '').trim() ||
-                       text.trim() ||
-                       '⚠️ 번역이 불완전합니다.'
+      summary: summaryMatch ? unescape(summaryMatch[1]) : '',
+      translated_text: translatedMatch ? unescape(translatedMatch[1]) : cleanText || text.trim()
     };
   }
 }
@@ -155,17 +165,16 @@ function extractFieldsFromText(text, type) {
 function isIncompleteResult(result, type) {
   if (!result) return true;
 
-  const MIN_TEXT_LENGTH = 50;  // 최소 텍스트 길이 (너무 짧으면 의미없음)
+  const MIN_TEXT_LENGTH = 20;  // 최소 텍스트 길이 (더 완화)
 
   if (type === 'summary') {
-    // 요약이 최소 길이 이상이면 OK
+    // 요약이 있고 최소 길이 이상이면 OK
     return !result.summary || result.summary.length < MIN_TEXT_LENGTH;
   } else if (type === 'chunk') {
-    // 번역 텍스트가 최소 길이 이상이면 OK (key_points는 선택적)
+    // 번역 텍스트가 있고 최소 길이 이상이면 OK (key_points는 선택적)
     return !result.translated_text || result.translated_text.length < MIN_TEXT_LENGTH;
   } else {
-    // full: 둘 다 있어야 하지만, 최소 번역 텍스트만 충분하면 OK
-    // summary가 짧아도 translated_text가 충분하면 재시도 안함
+    // full: translated_text만 충분하면 OK
     return !result.translated_text || result.translated_text.length < MIN_TEXT_LENGTH;
   }
 }
