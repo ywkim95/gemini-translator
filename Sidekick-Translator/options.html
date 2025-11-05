@@ -27,13 +27,29 @@
             font-weight: bold;
             color: #555;
         }
-        input[type="text"] {
-            width: calc(100% - 22px);
+        select {
+            width: 100%;
             padding: 10px;
             margin-bottom: 20px;
             border: 1px solid #ddd;
             border-radius: 4px;
             font-size: 16px;
+            background-color: white;
+            cursor: pointer;
+        }
+        input[type="text"] {
+            width: calc(100% - 22px);
+            padding: 10px;
+            margin-bottom: 10px;
+            border: 1px solid #ddd;
+            border-radius: 4px;
+            font-size: 16px;
+        }
+        .hint {
+            font-size: 12px;
+            color: #777;
+            margin-top: 0;
+            margin-bottom: 20px;
         }
         button {
             background-color: #007bff;
@@ -62,9 +78,22 @@
 <body>
     <div class="container">
         <h1>Sidekick Translator 설정</h1>
-        <p>Gemini API 키를 입력해주세요. 이 키는 확장 프로그램 내에서만 사용되며, 외부로 전송되지 않습니다.</p>
-        <label for="geminiApiKey">Gemini API Key:</label>
-        <input type="text" id="geminiApiKey" placeholder="YOUR_GEMINI_API_KEY">
+        <p>사용할 AI 제공자를 선택하고 API 키를 입력해주세요. 이 키는 확장 프로그램 내에서만 사용되며, 외부로 전송되지 않습니다.</p>
+
+        <label for="apiProvider">AI 제공자:</label>
+        <select id="apiProvider">
+            <option value="gemini">Google Gemini</option>
+            <option value="openai">OpenAI (ChatGPT)</option>
+            <option value="claude">Anthropic (Claude)</option>
+            <option value="grok">xAI (Grok)</option>
+        </select>
+
+        <div id="apiKeyContainer">
+            <label for="apiKey">API Key:</label>
+            <input type="text" id="apiKey" placeholder="YOUR_API_KEY">
+            <p id="apiKeyHint" class="hint"></p>
+        </div>
+
         <button id="saveButton">저장</button>
         <div id="status"></div>
     </div>
