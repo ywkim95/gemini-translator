@@ -200,6 +200,43 @@ document.addEventListener('DOMContentLoaded', () => {
   });
 
 
+  // 페이지 로드 시 캐시된 결과 확인 및 표시
+  function loadCachedResults() {
+    chrome.tabs.query({ active: true, currentWindow: true }, async (tabs) => {
+      if (!tabs[0]) return;
+
+      const tabId = tabs[0].id;
+      const tabUrl = tabs[0].url;
+      const cacheKey = `cachedResult-${tabId}-${tabUrl}`;
+
+      chrome.storage.local.get([cacheKey], (result) => {
+        if (result[cacheKey]) {
+          console.log('[sidebar.js] Found cached result, displaying automatically');
+
+          // 캐시된 결과를 currentSummary와 currentTranslation에 저장
+          currentSummary = result[cacheKey].summary;
+          currentTranslation = result[cacheKey].translated_text;
+
+          // 결과 표시
+          loadingView.style.display = 'none';
+          errorView.style.display = 'none';
+          resultView.style.display = 'block';
+
+          summaryEl.innerHTML = converter.makeHtml(result[cacheKey].summary);
+          translationEl.innerHTML = converter.makeHtml(result[cacheKey].translated_text);
+
+          // Export 버튼 표시
+          document.getElementById('export-btn').style.display = 'inline-flex';
+        } else {
+          console.log('[sidebar.js] No cached result found');
+        }
+      });
+    });
+  }
+
+  // 페이지 로드 시 캐시 확인
+  loadCachedResults();
+
   // background.js로부터 결과/에러 수신
   chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     if (message.type === 'STREAMING_START') {
