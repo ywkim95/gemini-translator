@@ -737,8 +737,7 @@ async function processChunkWithAPI(prompt, apiKey, provider, tabId, chunkIndex) 
 
     const requestBody = {
       model: provider === 'openai' ? 'gpt-5-nano' : 'grok-beta',
-      messages: [{ role: 'user', content: prompt }],
-      temperature: 0.7
+      messages: [{ role: 'user', content: prompt }]
     };
 
     const response = await fetch(endpoint, {
@@ -953,7 +952,6 @@ async function processOpenAISingleChunk(prompt, apiKey, tabId, mode) {
   const requestBody = {
     model: 'gpt-5-nano',
     messages: [{ role: 'user', content: prompt }],
-    temperature: 0.7,
     stream: true
   };
 
@@ -1081,7 +1079,6 @@ async function processGrokSingleChunk(prompt, apiKey, tabId, mode) {
   const requestBody = {
     model: 'grok-beta',
     messages: [{ role: 'user', content: prompt }],
-    temperature: 0.7,
     stream: true
   };
 
