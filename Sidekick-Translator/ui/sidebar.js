@@ -1,87 +1,228 @@
 document.addEventListener('DOMContentLoaded', () => {
-  // Constants
   const TOAST_DISPLAY_DURATION_MS = 3000;
   const TOAST_FADE_OUT_DURATION_MS = 300;
   const FINAL_RESULT_DELAY_MS = 500;
+  const DEFAULT_PROCESSING_TEXT = 'Processing...';
 
-  const analyzeBtn = document.getElementById('analyze-btn');
   const converter = new showdown.Converter();
+  const analyzeBtn = document.getElementById('analyze-btn');
+  const exportBtn = document.getElementById('export-btn');
 
-  // Tab elements
   const tabBtns = document.querySelectorAll('.tab-btn');
   const tabContents = document.querySelectorAll('.tab-content');
-  let currentTab = 'summary'; // 'summary' | 'full'
 
-  // Summary tab elements
-  const loadingViewSummary = document.getElementById('st-loading-state-summary');
-  const resultViewSummary = document.getElementById('st-result-state-summary');
-  const errorViewSummary = document.getElementById('st-error-state-summary');
-  const errorMessageSummary = document.getElementById('st-error-message-summary');
-  const summaryEl = document.getElementById('st-summary');
-
-  // Full translation tab elements
-  const loadingViewFull = document.getElementById('st-loading-state-full');
-  const resultViewFull = document.getElementById('st-result-state-full');
-  const errorViewFull = document.getElementById('st-error-state-full');
-  const errorMessageFull = document.getElementById('st-error-message-full');
-  const translationEl = document.getElementById('st-translation');
-
-  // Streaming state management (per tab)
-  let streamingStateSummary = {
-    isStreaming: false,
-    text: '',
-    timer: null
+  const tabConfig = {
+    summary: {
+      contentKey: 'summary',
+      fallbackKey: 'translated_text',
+      loadingView: document.getElementById('st-loading-state-summary'),
+      resultView: document.getElementById('st-result-state-summary'),
+      errorView: document.getElementById('st-error-state-summary'),
+      errorMessageEl: document.getElementById('st-error-message-summary'),
+      contentEl: document.getElementById('st-summary')
+    },
+    full: {
+      contentKey: 'translated_text',
+      fallbackKey: 'summary',
+      loadingView: document.getElementById('st-loading-state-full'),
+      resultView: document.getElementById('st-result-state-full'),
+      errorView: document.getElementById('st-error-state-full'),
+      errorMessageEl: document.getElementById('st-error-message-full'),
+      contentEl: document.getElementById('st-translation')
+    }
   };
 
-  let streamingStateFull = {
-    isStreaming: false,
-    text: '',
-    currentTranslation: '',
-    timer: null
+  let currentTab = 'summary';
+
+  const tabState = {
+    summary: createInitialTabState(),
+    full: createInitialTabState()
   };
 
-  // Data storage
-  let currentSummary = '';
-  let currentTranslation = '';
+  const tabResults = {
+    summary: '',
+    full: ''
+  };
 
-  // Tab switching logic
-  tabBtns.forEach(btn => {
-    btn.addEventListener('click', () => {
-      const targetTab = btn.dataset.tab;
+  function createInitialTabState() {
+    return {
+      isStreaming: false,
+      textBuffer: '',
+      parsedText: '',
+      timer: null
+    };
+  }
 
-      // Update active tab button
-      tabBtns.forEach(b => b.classList.remove('active'));
-      btn.classList.add('active');
+  function resolveMode(mode) {
+    return mode === 'full' ? 'full' : 'summary';
+  }
 
-      // Update active tab content
-      tabContents.forEach(content => content.classList.remove('active'));
-      document.getElementById(`${targetTab}-tab`).classList.add('active');
+  function setActiveTab(targetTab) {
+    currentTab = targetTab;
 
-      // Update current tab
-      currentTab = targetTab;
-
-      // If clicking full tab and no data yet, trigger analysis
-      if (targetTab === 'full' && !currentTranslation) {
-        console.log('[sidebar.js] Full tab clicked, requesting full translation');
-        requestAnalysis('full');
-      }
-
-      // If clicking summary tab and no data yet, trigger analysis
-      if (targetTab === 'summary' && !currentSummary) {
-        console.log('[sidebar.js] Summary tab clicked, requesting summary');
-        requestAnalysis('summary');
-      }
+    tabBtns.forEach((btn) => {
+      btn.classList.toggle('active', btn.dataset.tab === targetTab);
     });
-  });
 
-  // Toast 메시지 표시 함수
+    tabContents.forEach((content) => {
+      content.classList.toggle('active', content.id === `${targetTab}-tab`);
+    });
+  }
+
+  function setView(mode, view) {
+    const config = tabConfig[mode];
+
+    config.loadingView.style.display = view === 'loading' ? 'block' : 'none';
+    config.resultView.style.display = view === 'result' ? 'block' : 'none';
+    config.errorView.style.display = view === 'error' ? 'block' : 'none';
+  }
+
+  function renderTabContent(mode, text, options = {}) {
+    const { withCursor = false, asMarkdown = false } = options;
+    const config = tabConfig[mode];
+
+    if (asMarkdown) {
+      config.contentEl.innerHTML = converter.makeHtml(text || '');
+    } else {
+      config.contentEl.textContent = text || '';
+    }
+
+    if (withCursor) {
+      const cursor = document.createElement('span');
+      cursor.className = 'streaming-cursor';
+      cursor.textContent = '|';
+      config.contentEl.appendChild(cursor);
+    }
+
+    config.contentEl.scrollTop = config.contentEl.scrollHeight;
+  }
+
+  function clearTabTimer(mode) {
+    const state = tabState[mode];
+    if (state.timer) {
+      clearTimeout(state.timer);
+      state.timer = null;
+    }
+  }
+
+  function resetStreamState(mode) {
+    const state = tabState[mode];
+    clearTabTimer(mode);
+
+    state.isStreaming = false;
+    state.textBuffer = '';
+    state.parsedText = '';
+  }
+
+  function updateExportButtonVisibility() {
+    const hasExportableData = Boolean(tabResults.summary || tabResults.full);
+    exportBtn.style.display = hasExportableData ? 'inline-flex' : 'none';
+  }
+
+  function withActiveTab(callback) {
+    chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
+      if (!tabs || !tabs[0]) {
+        showToast('활성 탭을 찾을 수 없습니다.', 'error');
+        return;
+      }
+
+      callback(tabs[0]);
+    });
+  }
+
+  function unescapeJsonString(value) {
+    return value
+      .replace(/\\n/g, '\n')
+      .replace(/\\t/g, '\t')
+      .replace(/\\"/g, '"')
+      .replace(/\\\\/g, '\\');
+  }
+
+  function extractJsonField(streamedText, fieldName) {
+    const jsonBlockMatch = streamedText.match(/```json\s*\n?([\s\S]*?)(?:\n?```|$)/);
+    const source = jsonBlockMatch ? jsonBlockMatch[1] : streamedText;
+
+    const keyToken = `"${fieldName}"`;
+    const keyIndex = source.indexOf(keyToken);
+    if (keyIndex === -1) {
+      return '';
+    }
+
+    const colonIndex = source.indexOf(':', keyIndex + keyToken.length);
+    if (colonIndex === -1) {
+      return '';
+    }
+
+    const openingQuoteIndex = source.indexOf('"', colonIndex + 1);
+    if (openingQuoteIndex === -1) {
+      return '';
+    }
+
+    let value = '';
+    let escaped = false;
+
+    for (let i = openingQuoteIndex + 1; i < source.length; i += 1) {
+      const ch = source[i];
+
+      if (escaped) {
+        value += ch;
+        escaped = false;
+        continue;
+      }
+
+      if (ch === '\\') {
+        value += ch;
+        escaped = true;
+        continue;
+      }
+
+      if (ch === '"') {
+        break;
+      }
+
+      value += ch;
+    }
+
+    return unescapeJsonString(value);
+  }
+
+  function requestAnalysis(mode) {
+    const resolvedMode = resolveMode(mode);
+
+    resetStreamState(resolvedMode);
+    setView(resolvedMode, 'loading');
+    renderTabContent(resolvedMode, '');
+    exportBtn.style.display = 'none';
+
+    withActiveTab((activeTab) => {
+      chrome.tabs.sendMessage(activeTab.id, {
+        type: 'ANALYZE_PAGE',
+        mode: resolvedMode
+      });
+    });
+  }
+
+  function appendChunkTranslation(fullChunkText) {
+    if (!fullChunkText) {
+      return;
+    }
+
+    const fullState = tabState.full;
+
+    if (!fullState.parsedText) {
+      fullState.parsedText = fullChunkText;
+      return;
+    }
+
+    fullState.parsedText += `\n\n${fullChunkText}`;
+  }
+
   function showToast(message, type = 'success') {
     const toastContainer = document.getElementById('toast-container');
     const toastMessage = document.getElementById('toast-message');
     const toastIcon = document.getElementById('toast-icon');
     const toastText = document.getElementById('toast-text');
 
-    // 아이콘 설정
     if (type === 'success') {
       toastIcon.textContent = '✅';
       toastMessage.className = 'success';
@@ -93,7 +234,6 @@ document.addEventListener('DOMContentLoaded', () => {
     toastText.textContent = message;
     toastContainer.style.display = 'block';
 
-    // TOAST_DISPLAY_DURATION_MS 후 자동으로 사라짐
     setTimeout(() => {
       toastMessage.style.animation = 'toast-fade-out 0.3s ease-out';
       setTimeout(() => {
@@ -103,312 +243,213 @@ document.addEventListener('DOMContentLoaded', () => {
     }, TOAST_DISPLAY_DURATION_MS);
   }
 
-  // Helper function to extract and display streaming content for summary
-  function displayStreamingTextSummary(text) {
-    streamingStateSummary.text += text;
+  function handleStreamingStart(mode) {
+    const resolvedMode = resolveMode(mode);
+    const state = tabState[resolvedMode];
 
-    try {
-      let contentToSearch = streamingStateSummary.text;
-      const jsonMatch = streamingStateSummary.text.match(/```json\s*\n?([\s\S]*?)(?:\n?```|$)/);
-      if (jsonMatch) {
-        contentToSearch = jsonMatch[1];
-      }
+    state.isStreaming = true;
+    state.textBuffer = '';
+    state.parsedText = '';
 
-      const summaryMatch = contentToSearch.match(/"summary":\s*"([^]*?)(?="|$)/);
-      if (summaryMatch) {
-        currentSummary = summaryMatch[1].replace(/\\n/g, '\n').replace(/\\"/g, '"');
-      }
-
-      console.log('[sidebar.js] Summary length:', currentSummary.length);
-    } catch (e) {
-      console.log('[sidebar.js] Could not parse streaming JSON:', e);
-    }
-
-    if (currentSummary) {
-      summaryEl.innerHTML = currentSummary + '<span class="streaming-cursor">|</span>';
-    } else {
-      summaryEl.innerHTML = 'Processing...<span class="streaming-cursor">|</span>';
-    }
-
-    summaryEl.scrollTop = summaryEl.scrollHeight;
+    setView(resolvedMode, 'result');
+    renderTabContent(resolvedMode, '', { withCursor: true });
   }
 
-  // Helper function for full translation streaming
-  function displayStreamingTextFull(text) {
-    streamingStateFull.text += text;
+  function handleStreamChunk(mode, chunkText) {
+    const resolvedMode = resolveMode(mode);
+    const state = tabState[resolvedMode];
 
-    try {
-      let contentToSearch = streamingStateFull.text;
-      const jsonMatch = streamingStateFull.text.match(/```json\s*\n?([\s\S]*?)(?:\n?```|$)/);
-      if (jsonMatch) {
-        contentToSearch = jsonMatch[1];
-      }
-
-      const translatedMatch = contentToSearch.match(/"translated_text":\s*"([^]*?)(?="|$)/);
-      if (translatedMatch) {
-        streamingStateFull.currentTranslation = translatedMatch[1].replace(/\\n/g, '\n').replace(/\\"/g, '"');
-      }
-
-      console.log('[sidebar.js] Translation length:', streamingStateFull.currentTranslation.length);
-    } catch (e) {
-      console.log('[sidebar.js] Could not parse streaming JSON:', e);
-    }
-
-    if (streamingStateFull.currentTranslation) {
-      translationEl.innerHTML = streamingStateFull.currentTranslation + '<span class="streaming-cursor">|</span>';
-    } else {
-      translationEl.innerHTML = 'Processing...<span class="streaming-cursor">|</span>';
-    }
-
-    translationEl.scrollTop = translationEl.scrollHeight;
-  }
-
-  // Request analysis with mode
-  function requestAnalysis(mode) {
-    // Reset state based on mode
-    if (mode === 'summary') {
-      resultViewSummary.style.display = 'none';
-      errorViewSummary.style.display = 'none';
-      loadingViewSummary.style.display = 'block';
-      summaryEl.innerHTML = '';
-      streamingStateSummary = { isStreaming: false, text: '', timer: null };
-    } else if (mode === 'full') {
-      resultViewFull.style.display = 'none';
-      errorViewFull.style.display = 'none';
-      loadingViewFull.style.display = 'block';
-      translationEl.innerHTML = '';
-      streamingStateFull = { isStreaming: false, text: '', currentTranslation: '', timer: null };
-    }
-
-    // Export 버튼 숨기기
-    document.getElementById('export-btn').style.display = 'none';
-
-    // content_script에 분석 요청
-    chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
-      chrome.tabs.sendMessage(tabs[0].id, {
-        type: "ANALYZE_PAGE",
-        mode: mode  // 'summary' or 'full'
-      });
-    });
-  }
-
-  // 분석 시작 버튼 이벤트 (현재 탭에 따라 다른 모드)
-  analyzeBtn.addEventListener('click', () => {
-    requestAnalysis(currentTab);
-  });
-
-  // 닫기 버튼
-  document.getElementById('close-sidebar-btn').addEventListener('click', () => {
-    window.parent.postMessage({ type: 'CLOSE_SIDEKICK_SIDEBAR' }, '*');
-  });
-
-  // 너비 조절 버튼들
-  document.getElementById('btn-width-small').addEventListener('click', () => window.parent.postMessage({ type: 'RESIZE_SIDEBAR', width: '350px' }, '*'));
-  document.getElementById('btn-width-medium').addEventListener('click', () => window.parent.postMessage({ type: 'RESIZE_SIDEBAR', width: '600px' }, '*'));
-  document.getElementById('btn-width-large').addEventListener('click', () => window.parent.postMessage({ type: 'RESIZE_SIDEBAR', width: '900px' }, '*'));
-
-  // Export 버튼
-  document.getElementById('export-btn').addEventListener('click', () => {
-    if (!currentSummary && !currentTranslation) {
-      showToast('저장할 내용이 없습니다. 먼저 페이지를 분석해주세요.', 'error');
+    if (!state.isStreaming) {
       return;
     }
 
-    // content_script에 export 요청
-    chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
-      chrome.tabs.sendMessage(tabs[0].id, {
-        type: "EXPORT_CONTENT",
-        payload: {
-          summary: currentSummary,
-          translation: currentTranslation,
-          url: tabs[0].url,
-          title: tabs[0].title
-        }
-      });
-    });
-  });
+    state.textBuffer += chunkText;
 
-  // 페이지 로드 시 캐시된 결과 확인 및 표시
+    const extracted = extractJsonField(state.textBuffer, tabConfig[resolvedMode].contentKey);
+    if (extracted) {
+      state.parsedText = extracted;
+    }
+
+    const displayText = state.parsedText || DEFAULT_PROCESSING_TEXT;
+    renderTabContent(resolvedMode, displayText, { withCursor: true });
+  }
+
+  function handleChunkProgress(mode, payload) {
+    const resolvedMode = resolveMode(mode);
+    if (resolvedMode !== 'full') {
+      return;
+    }
+
+    const { current, total, text } = payload;
+    appendChunkTranslation(text);
+
+    const progressText = Number.isFinite(current) && Number.isFinite(total)
+      ? `Processing chunk ${current}/${total}...`
+      : DEFAULT_PROCESSING_TEXT;
+
+    const contentText = tabState.full.parsedText
+      ? `${tabState.full.parsedText}\n\n${progressText}`
+      : progressText;
+
+    renderTabContent('full', contentText, { withCursor: true });
+  }
+
+  function handleStreamingEnd(mode) {
+    const resolvedMode = resolveMode(mode);
+    const state = tabState[resolvedMode];
+
+    state.isStreaming = false;
+
+    const finalStreamingText = state.parsedText || state.textBuffer;
+    if (finalStreamingText) {
+      renderTabContent(resolvedMode, finalStreamingText);
+    }
+
+    updateExportButtonVisibility();
+  }
+
+  function handleDisplayResults(mode, payload) {
+    const resolvedMode = resolveMode(mode);
+    const config = tabConfig[resolvedMode];
+
+    resetStreamState(resolvedMode);
+    setView(resolvedMode, 'result');
+
+    tabResults[resolvedMode] = payload[config.contentKey] || payload[config.fallbackKey] || '';
+
+    updateExportButtonVisibility();
+
+    tabState[resolvedMode].timer = setTimeout(() => {
+      renderTabContent(resolvedMode, tabResults[resolvedMode], { asMarkdown: true });
+      tabState[resolvedMode].timer = null;
+    }, FINAL_RESULT_DELAY_MS);
+  }
+
+  function handleError(mode, message) {
+    const resolvedMode = resolveMode(mode);
+
+    resetStreamState(resolvedMode);
+    setView(resolvedMode, 'error');
+    tabConfig[resolvedMode].errorMessageEl.textContent = message || 'Unknown error occurred';
+  }
+
   function loadCachedResults() {
-    chrome.tabs.query({ active: true, currentWindow: true }, async (tabs) => {
-      if (!tabs[0]) return;
+    withActiveTab((activeTab) => {
+      const tabId = activeTab.id;
+      const tabUrl = activeTab.url;
 
-      const tabId = tabs[0].id;
-      const tabUrl = tabs[0].url;
+      if (!tabUrl) {
+        return;
+      }
+
       const cacheKeySummary = `cachedResult-${tabId}-${tabUrl}-summary`;
       const cacheKeyFull = `cachedResult-${tabId}-${tabUrl}-full`;
 
       chrome.storage.local.get([cacheKeySummary, cacheKeyFull], (result) => {
-        // Load summary if available
-        if (result[cacheKeySummary]) {
-          console.log('[sidebar.js] Found cached summary, displaying');
-          currentSummary = result[cacheKeySummary].summary || result[cacheKeySummary].translated_text;
+        const summaryCache = result[cacheKeySummary];
+        const fullCache = result[cacheKeyFull];
 
-          loadingViewSummary.style.display = 'none';
-          errorViewSummary.style.display = 'none';
-          resultViewSummary.style.display = 'block';
-          summaryEl.innerHTML = converter.makeHtml(currentSummary);
-
-          // Export 버튼 표시
-          if (currentSummary) {
-            document.getElementById('export-btn').style.display = 'inline-flex';
-          }
+        if (summaryCache) {
+          tabResults.summary = summaryCache.summary || summaryCache.translated_text || '';
+          setView('summary', 'result');
+          renderTabContent('summary', tabResults.summary, { asMarkdown: true });
         }
 
-        // Load full translation if available
-        if (result[cacheKeyFull]) {
-          console.log('[sidebar.js] Found cached full translation, displaying');
-          currentTranslation = result[cacheKeyFull].translated_text;
-
-          loadingViewFull.style.display = 'none';
-          errorViewFull.style.display = 'none';
-          resultViewFull.style.display = 'block';
-          translationEl.innerHTML = converter.makeHtml(currentTranslation);
-
-          // Export 버튼 표시
-          if (currentTranslation) {
-            document.getElementById('export-btn').style.display = 'inline-flex';
-          }
+        if (fullCache) {
+          tabResults.full = fullCache.translated_text || fullCache.summary || '';
+          setView('full', 'result');
+          renderTabContent('full', tabResults.full, { asMarkdown: true });
         }
+
+        updateExportButtonVisibility();
       });
     });
   }
 
-  // 페이지 로드 시 캐시 확인
-  loadCachedResults();
+  tabBtns.forEach((btn) => {
+    btn.addEventListener('click', () => {
+      const targetTab = resolveMode(btn.dataset.tab);
+      setActiveTab(targetTab);
 
-  // background.js로부터 결과/에러 수신
-  chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
-    const mode = message.mode || 'summary'; // Default to summary for backward compatibility
-
-    if (message.type === 'STREAMING_START') {
-      if (mode === 'summary') {
-        streamingStateSummary.isStreaming = true;
-        streamingStateSummary.text = '';
-        loadingViewSummary.style.display = 'none';
-        resultViewSummary.style.display = 'block';
-        summaryEl.innerHTML = '<span class="streaming-cursor">|</span>';
-      } else if (mode === 'full') {
-        streamingStateFull.isStreaming = true;
-        streamingStateFull.text = '';
-        streamingStateFull.currentTranslation = '';
-        loadingViewFull.style.display = 'none';
-        resultViewFull.style.display = 'block';
-        translationEl.innerHTML = '<span class="streaming-cursor">|</span>';
+      if (!tabResults[targetTab] && !tabState[targetTab].isStreaming) {
+        requestAnalysis(targetTab);
       }
+    });
+  });
 
-    } else if (message.type === 'DISPLAY_STREAM_CHUNK') {
-      if (mode === 'summary' && streamingStateSummary.isStreaming) {
-        displayStreamingTextSummary(message.payload.text);
-      } else if (mode === 'full' && streamingStateFull.isStreaming) {
-        displayStreamingTextFull(message.payload.text);
-      }
+  analyzeBtn.addEventListener('click', () => {
+    requestAnalysis(currentTab);
+  });
 
-    } else if (message.type === 'CHUNK_PROGRESS') {
-      // 청크 처리 진행 상황 표시 (full translation only)
-      const { current, total, text } = message.payload;
+  document.getElementById('close-sidebar-btn').addEventListener('click', () => {
+    window.parent.postMessage({ type: 'CLOSE_SIDEKICK_SIDEBAR' }, '*');
+  });
 
-      if (mode === 'full') {
-        summaryEl.innerHTML = `Processing chunk ${current}/${total}...<span class="streaming-cursor">|</span>`;
+  document.querySelectorAll('.width-controls button').forEach((button) => {
+    button.addEventListener('click', () => {
+      const width = button.dataset.width ? `${button.dataset.width}px` : '600px';
+      window.parent.postMessage({ type: 'RESIZE_SIDEBAR', width }, '*');
+    });
+  });
 
-        if (text) {
-          if (!streamingStateFull.currentTranslation) {
-            streamingStateFull.currentTranslation = text;
-          } else {
-            streamingStateFull.currentTranslation += '\n\n' + text;
-          }
-          translationEl.innerHTML = streamingStateFull.currentTranslation + '<span class="streaming-cursor">|</span>';
-          translationEl.scrollTop = translationEl.scrollHeight;
+  exportBtn.addEventListener('click', () => {
+    if (!tabResults.summary && !tabResults.full) {
+      showToast('저장할 내용이 없습니다. 먼저 페이지를 분석해주세요.', 'error');
+      return;
+    }
+
+    withActiveTab((activeTab) => {
+      chrome.tabs.sendMessage(activeTab.id, {
+        type: 'EXPORT_CONTENT',
+        payload: {
+          summary: tabResults.summary,
+          translation: tabResults.full,
+          url: activeTab.url,
+          title: activeTab.title
         }
-      }
+      });
+    });
+  });
 
-    } else if (message.type === 'STREAMING_END') {
-      if (mode === 'summary') {
-        streamingStateSummary.isStreaming = false;
-        summaryEl.innerHTML = currentSummary || streamingStateSummary.text;
+  const messageHandlers = {
+    STREAMING_START: (message) => {
+      handleStreamingStart(message.mode);
+    },
+    DISPLAY_STREAM_CHUNK: (message) => {
+      const text = message.payload && message.payload.text ? message.payload.text : '';
+      handleStreamChunk(message.mode, text);
+    },
+    CHUNK_PROGRESS: (message) => {
+      handleChunkProgress(message.mode, message.payload || {});
+    },
+    STREAMING_END: (message) => {
+      handleStreamingEnd(message.mode);
+    },
+    DISPLAY_RESULTS: (message) => {
+      handleDisplayResults(message.mode, message.payload || {});
+    },
+    DISPLAY_ERROR: (message) => {
+      const errorMessage = message.error || (message.payload && message.payload.message);
+      handleError(message.mode, errorMessage);
+    },
+    ANALYSIS_ERROR: (message) => {
+      const errorMessage = message.error || (message.payload && message.payload.message);
+      handleError(message.mode, errorMessage);
+    },
+    EXPORT_SUCCESS: (message) => {
+      showToast(message.message || '내보내기에 성공했습니다.', 'success');
+    },
+    EXPORT_ERROR: (message) => {
+      showToast(`Export 오류: ${message.error || '알 수 없는 오류'}`, 'error');
+    }
+  };
 
-        if (currentSummary) {
-          document.getElementById('export-btn').style.display = 'inline-flex';
-        }
-      } else if (mode === 'full') {
-        streamingStateFull.isStreaming = false;
-        translationEl.innerHTML = streamingStateFull.currentTranslation || streamingStateFull.text;
-
-        if (streamingStateFull.currentTranslation) {
-          document.getElementById('export-btn').style.display = 'inline-flex';
-        }
-      }
-
-    } else if (message.type === 'DISPLAY_RESULTS') {
-      if (mode === 'summary') {
-        streamingStateSummary.isStreaming = false;
-        if (streamingStateSummary.timer) {
-          clearTimeout(streamingStateSummary.timer);
-          streamingStateSummary.timer = null;
-        }
-
-        loadingViewSummary.style.display = 'none';
-        resultViewSummary.style.display = 'block';
-
-        currentSummary = message.payload.summary || message.payload.translated_text;
-
-        document.getElementById('export-btn').style.display = 'inline-flex';
-
-        setTimeout(() => {
-          summaryEl.innerHTML = converter.makeHtml(currentSummary);
-        }, FINAL_RESULT_DELAY_MS);
-
-      } else if (mode === 'full') {
-        streamingStateFull.isStreaming = false;
-        if (streamingStateFull.timer) {
-          clearTimeout(streamingStateFull.timer);
-          streamingStateFull.timer = null;
-        }
-
-        loadingViewFull.style.display = 'none';
-        resultViewFull.style.display = 'block';
-
-        currentTranslation = message.payload.translated_text;
-
-        document.getElementById('export-btn').style.display = 'inline-flex';
-
-        setTimeout(() => {
-          translationEl.innerHTML = converter.makeHtml(currentTranslation);
-        }, FINAL_RESULT_DELAY_MS);
-      }
-
-    } else if (message.type === 'DISPLAY_ERROR' || message.type === 'ANALYSIS_ERROR') {
-      if (mode === 'summary') {
-        streamingStateSummary.isStreaming = false;
-        streamingStateSummary.text = '';
-        if (streamingStateSummary.timer) {
-          clearTimeout(streamingStateSummary.timer);
-          streamingStateSummary.timer = null;
-        }
-
-        loadingViewSummary.style.display = 'none';
-        errorViewSummary.style.display = 'block';
-        errorMessageSummary.textContent = message.error || (message.payload && message.payload.message) || 'Unknown error occurred';
-
-      } else if (mode === 'full') {
-        streamingStateFull.isStreaming = false;
-        streamingStateFull.text = '';
-        streamingStateFull.currentTranslation = '';
-        if (streamingStateFull.timer) {
-          clearTimeout(streamingStateFull.timer);
-          streamingStateFull.timer = null;
-        }
-
-        loadingViewFull.style.display = 'none';
-        errorViewFull.style.display = 'block';
-        errorMessageFull.textContent = message.error || (message.payload && message.payload.message) || 'Unknown error occurred';
-      }
-
-    } else if (message.type === 'EXPORT_SUCCESS') {
-      showToast(message.message, 'success');
-
-    } else if (message.type === 'EXPORT_ERROR') {
-      showToast('Export 오류: ' + message.error, 'error');
+  chrome.runtime.onMessage.addListener((message) => {
+    const handler = messageHandlers[message.type];
+    if (handler) {
+      handler(message);
     }
   });
+
+  loadCachedResults();
 });
